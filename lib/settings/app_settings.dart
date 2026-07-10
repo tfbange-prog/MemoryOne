@@ -3,6 +3,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 class AppSettings {
   static const _kNamePrefix = 'display_name_prefix';
   static const _kNameSuffix = 'display_name_suffix';
+  static const _kFontScale = 'font_scale';
   static const defaultSuffix = '的書坊';
 
   static Future<String?> getDisplayName() async {
@@ -20,6 +21,16 @@ class AppSettings {
     final sp = await SharedPreferences.getInstance();
     await sp.setString(_kNamePrefix, prefix.trim());
     await sp.setString(_kNameSuffix, suffix.trim());
+  }
+
+  static Future<void> setFontScale(double scale) async {
+    final sp = await SharedPreferences.getInstance();
+    await sp.setDouble(_kFontScale, scale.clamp(0.8, 1.8));
+  }
+
+  static Future<double> getFontScale() async {
+    final sp = await SharedPreferences.getInstance();
+    return sp.getDouble(_kFontScale) ?? 1.0;
   }
 
   static Future<({String? prefix, String suffix})> getDisplayNameParts() async {

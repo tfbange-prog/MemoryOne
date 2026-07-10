@@ -19,8 +19,40 @@ class MyApp extends StatelessWidget {
       title: 'Friends Vault',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
         useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFF4F8DE8),
+          brightness: Brightness.light,
+        ).copyWith(
+          primary: const Color(0xFF4F8DE8),
+          onPrimary: Colors.white,
+          secondary: const Color(0xFF42C2A8),
+          primaryContainer: const Color(0xFFE7F2FF),
+          secondaryContainer: const Color(0xFFE6F8F2),
+          surface: const Color(0xFFFFFEFE),
+          surfaceContainerHighest: const Color(0xFFF3F7FB),
+        ),
+        scaffoldBackgroundColor: const Color(0xFFF6FAFD),
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Color(0xFF2F80ED),
+          foregroundColor: Colors.white,
+          elevation: 0,
+        ),
+        cardTheme: CardThemeData(
+          color: Colors.white,
+          elevation: 1,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+        ),
+        inputDecorationTheme: InputDecorationTheme(
+          filled: true,
+          fillColor: const Color(0xFFF8FAFC),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(14),
+            borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+          ),
+        ),
       ),
       home: const _Bootstrapper(),
     );
@@ -37,6 +69,7 @@ class _Bootstrapper extends StatefulWidget {
 class _BootstrapperState extends State<_Bootstrapper> {
   late final AppDb _db;
   String? _displayName;
+  double _fontScale = 1.0;
   bool _ready = false;
 
   @override
@@ -49,6 +82,7 @@ class _BootstrapperState extends State<_Bootstrapper> {
   Future<void> _init() async {
     await _db.bootstrap();
     _displayName = await AppSettings.getDisplayName();
+    _fontScale = await AppSettings.getFontScale();
     if (mounted) setState(() => _ready = true);
   }
 
@@ -63,6 +97,11 @@ class _BootstrapperState extends State<_Bootstrapper> {
     if (mounted) setState(() {});
   }
 
+  void _updateFontScale(double newScale) {
+    if (!mounted) return;
+    setState(() => _fontScale = newScale);
+  }
+
   @override
   Widget build(BuildContext context) {
     if (!_ready) {
@@ -72,6 +111,9 @@ class _BootstrapperState extends State<_Bootstrapper> {
     if (name == null) {
       return OnboardingScreen(onDone: _refreshName);
     }
-    return HomeScreen(db: _db, displayName: name);
+    return MediaQuery(
+      data: MediaQuery.of(context).copyWith(textScaler: TextScaler.linear(_fontScale)),
+      child: HomeScreen(db: _db, displayName: name, onFontScaleChanged: _updateFontScale),
+    );
   }
 }

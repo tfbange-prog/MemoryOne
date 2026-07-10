@@ -126,16 +126,43 @@ END;
     }
   }
 
-  Future<String> createCategory({required String name, int sortOrder = 0}) async {
+  Future<String> createCategory({required String name, int? sortOrder}) async {
     final id = const Uuid().v4();
     final now = DateTime.now();
+    final order = sortOrder ?? await _nextCategorySortOrder();
     await into(categories).insert(CategoriesCompanion.insert(
       id: id,
       name: name,
+      sortOrder: Value(order),
       createdAt: now,
       updatedAt: now,
     ));
     return id;
+  }
+
+  Future<int> _nextCategorySortOrder() async {
+    final row = await customSelect(
+      'SELECT MAX(sort_order) AS max_order FROM categories',
+      readsFrom: {categories},
+    ).getSingle();
+    final maxOrder = row.read<int?>('max_order');
+    return (maxOrder ?? -1) + 1;
+  }
+
+  Future<void> reorderCategories(List<String> orderedIds) async {
+    final now = DateTime.now();
+    await batch((b) {
+      for (var i = 0; i < orderedIds.length; i++) {
+        b.update(
+          categories,
+          CategoriesCompanion(
+            sortOrder: Value(i),
+            updatedAt: Value(now),
+          ),
+          where: (t) => t.id.equals(orderedIds[i]),
+        );
+      }
+    });
   }
 
   Future<void> renameCategory({required String id, required String name}) async {
@@ -145,6 +172,26 @@ END;
         updatedAt: Value(DateTime.now()),
       ),
     );
+  }
+
+  /// Return true when a category has no entries (safe to delete).
+  Future<bool> canDeleteCategory(String categoryId) async {
+    final cnt = await customSelect(
+      'SELECT COUNT(1) AS c FROM entries WHERE category_id = ?',
+      variables: [Variable<String>(categoryId)],
+      readsFrom: {entries},
+    ).getSingle();
+    final c = cnt.read<int>('c');
+    return c == 0;
+  }
+
+  /// Delete a category only if it has no entries. Throws if not empty.
+  Future<void> deleteCategory(String categoryId) async {
+    final ok = await canDeleteCategory(categoryId);
+    if (!ok) {
+      throw StateError('Category not empty');
+    }
+    await (delete(categories)..where((t) => t.id.equals(categoryId))).go();
   }
 
   Future<String> createEntry({
@@ -169,6 +216,78 @@ END;
     return id;
   }
 
+  Future<String> addAttachment({
+    required String entryId,
+    required File file,
+    String? originalName,
+  }) async {
+    final docs = await getApplicationDocumentsDirectory();
+    final storageDir = Directory(p.join(docs.path, 'attachments'));
+    if (!await storageDir.exists()) {
+      await storageDir.create(recursive: true);
+    }
+
+    final ext = p.extension(file.path);
+    final targetPath = p.join(storageDir.path, '${const Uuid().v4()}$ext');
+    await file.copy(targetPath);
+
+    final id = const Uuid().v4();
+    final now = DateTime.now();
+    await into(attachments).insert(AttachmentsCompanion.insert(
+      id: id,
+      entryId: entryId,
+      relativePath: p.relative(targetPath, from: docs.path),
+      originalName: Value(originalName ?? p.basename(file.path)),
+      mimeType: Value(_mimeTypeFor(file.path)),
+      byteLength: Value(await file.length()),
+      createdAt: now,
+    ));
+
+    await (update(entries)..where((t) => t.id.equals(entryId))).write(
+      EntriesCompanion(updatedAt: Value(now)),
+    );
+
+    return id;
+  }
+
+  Future<List<StoredAttachment>> getAttachmentsForEntry(String entryId) async {
+    final rows = await (select(attachments)
+          ..where((t) => t.entryId.equals(entryId))
+          ..orderBy([(t) => OrderingTerm(expression: t.createdAt, mode: OrderingMode.desc)]))
+        .get();
+
+    final docs = await getApplicationDocumentsDirectory();
+    return rows
+        .map(
+          (row) => StoredAttachment(
+            id: row.id,
+            entryId: row.entryId,
+            filePath: p.join(docs.path, row.relativePath),
+            originalName: row.originalName,
+            mimeType: row.mimeType,
+            byteLength: row.byteLength,
+            createdAt: row.createdAt,
+          ),
+        )
+        .toList(growable: false);
+  }
+
+  Future<void> deleteAttachment({required String attachmentId, required String entryId}) async {
+    final attachment = await (select(attachments)..where((t) => t.id.equals(attachmentId))).getSingleOrNull();
+    if (attachment == null) return;
+
+    final docs = await getApplicationDocumentsDirectory();
+    final file = File(p.join(docs.path, attachment.relativePath));
+    if (await file.exists()) {
+      await file.delete();
+    }
+
+    await (delete(attachments)..where((t) => t.id.equals(attachmentId))).go();
+    await (update(entries)..where((t) => t.id.equals(entryId))).write(
+      EntriesCompanion(updatedAt: Value(DateTime.now())),
+    );
+  }
+
   Future<void> updateEntry({
     required String id,
     required String title,
@@ -184,8 +303,43 @@ END;
   }
 
   Future<void> deleteEntry(String id) async {
+    final attachmentRows = await (select(attachments)..where((t) => t.entryId.equals(id))).get();
+    for (final attachment in attachmentRows) {
+      final docs = await getApplicationDocumentsDirectory();
+      final file = File(p.join(docs.path, attachment.relativePath));
+      if (await file.exists()) {
+        await file.delete();
+      }
+    }
     await (delete(attachments)..where((t) => t.entryId.equals(id))).go();
     await (delete(entries)..where((t) => t.id.equals(id))).go();
+  }
+
+  static String? _mimeTypeFor(String path) {
+    final ext = p.extension(path).toLowerCase();
+    switch (ext) {
+      case '.jpg':
+      case '.jpeg':
+        return 'image/jpeg';
+      case '.png':
+        return 'image/png';
+      case '.gif':
+        return 'image/gif';
+      case '.webp':
+        return 'image/webp';
+      case '.pdf':
+        return 'application/pdf';
+      case '.mp3':
+        return 'audio/mpeg';
+      case '.m4a':
+        return 'audio/mp4';
+      case '.mp4':
+        return 'video/mp4';
+      case '.mov':
+        return 'video/quicktime';
+      default:
+        return null;
+    }
   }
 
   /// Escape user input for SQL LIKE patterns.
@@ -224,10 +378,12 @@ END;
   OR LOWER(IFNULL(e.source_text, '')) LIKE ? ESCAPE '\\'
   OR LOWER(IFNULL(e.source_url, '')) LIKE ? ESCAPE '\\'
   OR LOWER(c.name) LIKE ? ESCAPE '\\'
+  OR LOWER(IFNULL(a.original_name, '')) LIKE ? ESCAPE '\\'
   OR REPLACE(LOWER(e.title), ' ', '') LIKE ? ESCAPE '\\'
   OR REPLACE(LOWER(IFNULL(e.content, '')), ' ', '') LIKE ? ESCAPE '\\'
   OR REPLACE(LOWER(IFNULL(e.source_text, '')), ' ', '') LIKE ? ESCAPE '\\'
   OR REPLACE(LOWER(IFNULL(e.source_url, '')), ' ', '') LIKE ? ESCAPE '\\'
+  OR REPLACE(LOWER(IFNULL(a.original_name, '')), ' ', '') LIKE ? ESCAPE '\\'
 )
 ''');
 
@@ -237,6 +393,8 @@ END;
         Variable<String>(pattern),
         Variable<String>(pattern),
         Variable<String>(pattern),
+        Variable<String>(pattern),
+        Variable<String>(compactPattern),
         Variable<String>(compactPattern),
         Variable<String>(compactPattern),
         Variable<String>(compactPattern),
@@ -257,7 +415,9 @@ SELECT
   c.name AS category_name
 FROM entries e
 JOIN categories c ON c.id = e.category_id
+LEFT JOIN attachments a ON a.entry_id = e.id
 WHERE ${tokenConditions.join(' AND ')}
+GROUP BY e.id
 ORDER BY e.updated_at DESC
 LIMIT ?
 ''',
@@ -295,6 +455,26 @@ class SearchHit {
     required this.title,
     required this.content,
     required this.updatedAt,
+  });
+}
+
+class StoredAttachment {
+  final String id;
+  final String entryId;
+  final String filePath;
+  final String? originalName;
+  final String? mimeType;
+  final int? byteLength;
+  final DateTime createdAt;
+
+  StoredAttachment({
+    required this.id,
+    required this.entryId,
+    required this.filePath,
+    required this.originalName,
+    required this.mimeType,
+    required this.byteLength,
+    required this.createdAt,
   });
 }
 

@@ -1,16 +1,19 @@
 import 'dart:async';
-import 'dart:io' show Platform;
+import 'dart:io';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:drift/drift.dart' show OrderingMode, OrderingTerm;
+import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
+import 'package:path/path.dart' as p;
+import 'package:url_launcher/url_launcher.dart';
 
 import '../db/app_db.dart';
 import '../settings/app_settings.dart';
 import 'package:receive_sharing_intent/receive_sharing_intent.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 String? _extractUrl(String text) {
   final regExp = RegExp(r'https?://[a-zA-Z0-9\-\.]+\.[a-zA-Z]{2,}(?:/[^ \s]*)?');
@@ -28,8 +31,14 @@ class DisplayNameParts {
 class HomeScreen extends StatefulWidget {
   final AppDb db;
   final String displayName;
+  final ValueChanged<double> onFontScaleChanged;
 
-  const HomeScreen({super.key, required this.db, required this.displayName});
+  const HomeScreen({
+    super.key,
+    required this.db,
+    required this.displayName,
+    required this.onFontScaleChanged,
+  });
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -37,12 +46,22 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   final _fmt = DateFormat('yyyy/MM/dd HH:mm');
+  String? _draggingCategoryId;
+  double _fontScale = 1.0;
   StreamSubscription? _intentDataStreamSubscription;
+  StreamSubscription? _intentTextStreamSubscription;
 
   @override
   void initState() {
     super.initState();
     _initSharingIntent();
+    _loadFontScale();
+  }
+
+  Future<void> _loadFontScale() async {
+    final scale = await AppSettings.getFontScale();
+    if (!mounted) return;
+    setState(() => _fontScale = scale);
   }
 
   void _initSharingIntent() {
@@ -58,6 +77,10 @@ class _HomeScreenState extends State<HomeScreen> {
       ReceiveSharingIntent.instance.getInitialMedia().then((List<SharedMediaFile> value) {
         _handleSharedMedia(value);
       });
+
+      // Note: text stream API may not be available on all platforms (e.g. Windows).
+      // We only listen for media streams above. Plain text from clipboard is
+      // handled via the paste action which routes into the incoming share screen.
     } catch (e) {
       print("Sharing intent not supported: $e");
     }
@@ -66,61 +89,41 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     _intentDataStreamSubscription?.cancel();
+    _intentTextStreamSubscription?.cancel();
     super.dispose();
   }
 
   void _handleSharedMedia(List<SharedMediaFile> value) {
     if (value.isEmpty) return;
-    _showShareTargetDialog(value);
+    _openIncomingShareScreen(sharedText: null, sharedFiles: value);
     ReceiveSharingIntent.instance.reset();
   }
 
-  Future<void> _showShareTargetDialog(List<SharedMediaFile> files) async {
-    final first = files.first;
-    String content = first.path;
+  void _handleSharedText(String text) {
+    if (text.trim().isEmpty) return;
+    _openIncomingShareScreen(sharedText: text, sharedFiles: const []);
+  }
 
-    final categories = await (widget.db.select(widget.db.categories)..orderBy([(t) => OrderingTerm(expression: t.sortOrder)])).get();
-
+  Future<void> _openIncomingShareScreen({String? sharedText, required List<SharedMediaFile> sharedFiles}) async {
+    final rows = await (widget.db.select(widget.db.categories)
+          ..orderBy([(t) => OrderingTerm(expression: t.sortOrder)]))
+        .get();
+    if (rows.isEmpty) return;
+    final categories = rows
+        .map((r) => CategoryRow(id: r.id, name: r.name, updatedAt: r.updatedAt))
+        .toList(growable: false);
     if (!mounted) return;
-    
-    final selectedCategory = await showDialog<String>(
-      context: context,
-      builder: (context) {
-         return AlertDialog(
-           title: const Text('分享內容要存到哪個區塊？'),
-           content: SizedBox(
-             width: double.maxFinite,
-             child: ListView.builder(
-               shrinkWrap: true,
-               itemCount: categories.length,
-               itemBuilder: (context, index) {
-                 final cat = categories[index];
-                 return ListTile(
-                   title: Text(cat.name),
-                   onTap: () => Navigator.pop(context, cat.id),
-                 );
-               },
-             ),
-           ),
-           actions: [
-             TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
-           ],
-         );
-      }
-    );
 
-    if (selectedCategory != null && mounted) {
-      await Navigator.of(context).push(
-        MaterialPageRoute(
-          builder: (_) => EditEntryScreen(
-            db: widget.db,
-            categoryId: selectedCategory,
-            categoryName: categories.firstWhere((c) => c.id == selectedCategory).name,
-            initialContent: content,
-          ),
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => IncomingShareScreen(
+          db: widget.db,
+          categories: categories,
+          sharedText: sharedText,
+          sharedFiles: sharedFiles,
         ),
-      );
-    }
+      ),
+    );
   }
 
   Future<void> _editDisplayName() async {
@@ -182,11 +185,11 @@ class _HomeScreenState extends State<HomeScreen> {
     final name = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('新增區塊'),
+        title: const Text('新增資料框'),
         content: TextField(
           controller: controller,
           autofocus: true,
-          decoration: const InputDecoration(labelText: '區塊名稱'),
+          decoration: const InputDecoration(labelText: '資料框名稱'),
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
@@ -203,9 +206,238 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {});
   }
 
+  Future<void> _attemptDeleteCategory(String categoryId, String categoryName) async {
+    final canDelete = await widget.db.canDeleteCategory(categoryId);
+    if (!canDelete) {
+      final view = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('無法刪除'),
+          content: const Text('此資料框底下仍有資料，請先清空內容後再刪除。是否要查看內容？'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+            FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('查看內容')),
+          ],
+        ),
+      );
+      if (view == true) {
+        await Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => CategoryScreen(db: widget.db, categoryId: categoryId, categoryName: categoryName),
+          ),
+        );
+      }
+      return;
+    }
+
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('確定刪除？'),
+        content: Text('確定要刪除資料框「$categoryName」嗎？此操作無法復原。'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('刪除')),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+
+    try {
+      await widget.db.deleteCategory(categoryId);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已刪除資料框')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('刪除失敗：${e.toString()}')));
+    }
+  }
+
   Future<void> _openSearch() async {
     await Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => SearchScreen(db: widget.db)),
+    );
+  }
+
+  Future<void> _editFontScale() async {
+    var selectedScale = _fontScale;
+    final result = await showDialog<double>(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('字體大小'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text('當前：${selectedScale.toStringAsFixed(1)}'),
+                  const SizedBox(height: 16),
+                  Slider(
+                    min: 0.8,
+                    max: 1.8,
+                    divisions: 10,
+                    value: selectedScale,
+                    label: selectedScale.toStringAsFixed(1),
+                    onChanged: (value) {
+                      setDialogState(() => selectedScale = value);
+                    },
+                  ),
+                  const SizedBox(height: 8),
+                  const Text('拖曳滑桿可放大或縮小字體。'),
+                ],
+              ),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
+                FilledButton(onPressed: () => Navigator.pop(context, selectedScale), child: const Text('儲存')),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (result == null) return;
+    await AppSettings.setFontScale(result);
+    if (!mounted) return;
+    setState(() => _fontScale = result);
+    widget.onFontScaleChanged(result);
+  }
+
+  Future<void> _reorderCategory(String draggedId, String targetId, List<CategoryRow> currentItems) async {
+    final updated = List<CategoryRow>.from(currentItems);
+    final draggedIndex = updated.indexWhere((item) => item.id == draggedId);
+    final targetIndex = updated.indexWhere((item) => item.id == targetId);
+    if (draggedIndex < 0 || targetIndex < 0 || draggedIndex == targetIndex) return;
+    final dragged = updated.removeAt(draggedIndex);
+    updated.insert(targetIndex, dragged);
+    await widget.db.reorderCategories(updated.map((item) => item.id).toList());
+  }
+
+  Widget _buildCategoryCard(CategoryRow item, List<CategoryRow> currentItems, double width) {
+    return DragTarget<CategoryRow>(
+      onWillAccept: (data) => data != null && data.id != item.id,
+      onAccept: (dragged) => _reorderCategory(dragged.id, item.id, currentItems),
+      builder: (context, candidateData, rejectedData) {
+        final highlight = candidateData.isNotEmpty;
+        return LongPressDraggable<CategoryRow>(
+          data: item,
+          onDragStarted: () => setState(() => _draggingCategoryId = item.id),
+          onDraggableCanceled: (_, __) => setState(() => _draggingCategoryId = null),
+          onDragEnd: (_) => setState(() => _draggingCategoryId = null),
+          feedback: Material(
+            elevation: 6,
+            borderRadius: BorderRadius.circular(20),
+            child: SizedBox(
+              width: width,
+              child: _categoryCard(item, isDragging: true),
+            ),
+          ),
+          childWhenDragging: Opacity(
+            opacity: 0.25,
+            child: SizedBox(width: width, child: _categoryCard(item, isOverlay: true)),
+          ),
+          child: SizedBox(width: width, child: _categoryCard(item, isHighlighted: highlight)),
+        );
+      },
+    );
+  }
+
+  Widget _categoryCard(CategoryRow item, {bool isDragging = false, bool isOverlay = false, bool isHighlighted = false}) {
+    final accent = const Color(0xFFF6CFBE);
+    final accentStrong = const Color(0xFFB9DCF2);
+    return Material(
+      color: isDragging ? Colors.white : null,
+      elevation: isDragging ? 8 : 2,
+      borderRadius: BorderRadius.circular(20),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(20),
+        onTap: () async {
+          await Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => CategoryScreen(
+                db: widget.db,
+                categoryId: item.id,
+                categoryName: item.name,
+              ),
+            ),
+          );
+        },
+        child: Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(20),
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                accent,
+                accentStrong,
+              ],
+            ),
+            border: Border.all(
+              color: isHighlighted ? const Color(0xFF2F80ED) : const Color(0xFF3DAA9A),
+              width: isHighlighted ? 2 : 1,
+            ),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: Text(
+                      item.name,
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+                      maxLines: 3,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  PopupMenuButton<String>(
+                    tooltip: '更多操作',
+                    onSelected: (value) async {
+                      if (value == 'rename') {
+                        final controller = TextEditingController(text: item.name);
+                        final name = await showDialog<String>(
+                          context: context,
+                          builder: (context) => AlertDialog(
+                            title: const Text('重命名資料框'),
+                            content: TextField(controller: controller, decoration: const InputDecoration(labelText: '名稱')),
+                            actions: [
+                              TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
+                              FilledButton(onPressed: () => Navigator.pop(context, controller.text.trim()), child: const Text('儲存')),
+                            ],
+                          ),
+                        );
+                        if (name != null && name.isNotEmpty) {
+                          await widget.db.renameCategory(id: item.id, name: name);
+                        }
+                      }
+                    },
+                    itemBuilder: (_) => const [
+                      PopupMenuItem(value: 'rename', child: Text('重命名')),
+                    ],
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Text('更新：${_fmt.format(item.updatedAt)}', style: Theme.of(context).textTheme.bodySmall),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  const Icon(Icons.drag_handle, size: 18),
+                  const SizedBox(width: 4),
+                  Text(
+                    '長按拖曳排序',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 
@@ -217,14 +449,23 @@ class _HomeScreenState extends State<HomeScreen> {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('剪貼簿是空的')));
       return;
     }
-    _showShareTargetDialog([SharedMediaFile(path: text, type: SharedMediaType.text, thumbnail: '')]);
+    _openIncomingShareScreen(sharedText: text, sharedFiles: const []);
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.displayName),
+        title: Text(widget.displayName, style: const TextStyle(color: Color(0xFF7397AB))),
+        flexibleSpace: Container(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [Color(0xFFFFD78A), Color(0xFFF4762D)],
+            ),
+          ),
+        ),
         actions: [
           if (kIsWeb || (!Platform.isAndroid && !Platform.isIOS))
             IconButton(
@@ -233,7 +474,7 @@ class _HomeScreenState extends State<HomeScreen> {
               icon: const Icon(Icons.paste),
             ),
           IconButton(
-            tooltip: '新增區塊',
+            tooltip: '新增資料框',
             onPressed: _addCategory,
             icon: const Icon(Icons.add),
           ),
@@ -243,73 +484,92 @@ class _HomeScreenState extends State<HomeScreen> {
             icon: const Icon(Icons.edit),
           ),
           IconButton(
+            tooltip: '字體大小',
+            onPressed: _editFontScale,
+            icon: const Icon(Icons.format_size),
+          ),
+          IconButton(
             tooltip: '搜尋',
             onPressed: _openSearch,
             icon: const Icon(Icons.search),
           ),
         ],
       ),
-      body: StreamBuilder<List<CategoryRow>>(
-        stream: (widget.db.select(widget.db.categories)
-              ..orderBy([
-                (t) => OrderingTerm(expression: t.sortOrder),
-                (t) => OrderingTerm(expression: t.updatedAt, mode: OrderingMode.desc),
-              ]))
-            .watch()
-            .map((rows) => rows
-                .map((r) => CategoryRow(id: r.id, name: r.name, updatedAt: r.updatedAt))
-                .toList()),
-        builder: (context, snapshot) {
-          final items = snapshot.data ?? const <CategoryRow>[];
-          if (items.isEmpty) {
-            return Center(
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Text('還沒有區塊，先新增一個吧。'),
-                    const SizedBox(height: 12),
-                    FilledButton.icon(
-                      onPressed: _addCategory,
-                      icon: const Icon(Icons.add),
-                      label: const Text('新增區塊'),
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [Color(0xFFFFF9F5), Color(0xFFFFF5F0)],
+          ),
+        ),
+        child: StreamBuilder<List<CategoryRow>>(
+          stream: (widget.db.select(widget.db.categories)
+                ..orderBy([
+                  (t) => OrderingTerm(expression: t.sortOrder),
+                  (t) => OrderingTerm(expression: t.updatedAt, mode: OrderingMode.desc),
+                ]))
+              .watch()
+              .map((rows) => rows
+                  .map((r) => CategoryRow(id: r.id, name: r.name, updatedAt: r.updatedAt))
+                  .toList()),
+          builder: (context, snapshot) {
+            final items = snapshot.data ?? const <CategoryRow>[];
+            if (items.isEmpty) {
+              return Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Container(
+                    padding: const EdgeInsets.all(20),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFFFDF7),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: const Color(0xFF3DAA9A), width: 1.5),
                     ),
-                  ],
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Text('還沒有資料框，先新增一個吧。'),
+                        const SizedBox(height: 12),
+                        FilledButton.icon(
+                          onPressed: _addCategory,
+                          icon: const Icon(Icons.add),
+                          label: const Text('新增資料框'),
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
-              ),
-            );
-          }
-          return ListView.separated(
-            itemCount: items.length,
-            separatorBuilder: (_, __) => const Divider(height: 1),
-            itemBuilder: (context, i) {
-              final c = items[i];
-              return ListTile(
-                title: Text(c.name),
-                subtitle: Text('更新：${_fmt.format(c.updatedAt)}'),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () async {
-                  await Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (_) => CategoryScreen(
-                        db: widget.db,
-                        categoryId: c.id,
-                        categoryName: c.name,
-                      ),
-                    ),
-                  );
-                },
               );
-            },
-          );
-        },
+            }
+            return LayoutBuilder(
+              builder: (context, constraints) {
+                final spacing = 16.0;
+                final maxWidth = constraints.maxWidth;
+                final columns = (maxWidth / 220).floor().clamp(1, 5);
+                final itemWidth = (maxWidth - (columns - 1) * spacing) / columns;
+                return SingleChildScrollView(
+                  padding: const EdgeInsets.all(16),
+                  child: Wrap(
+                    spacing: spacing,
+                    runSpacing: 16,
+                    children: items
+                        .map((c) => SizedBox(width: itemWidth, child: _buildCategoryCard(c, items, itemWidth)))
+                        .toList(),
+                  ),
+                );
+              },
+            );
+          },
+        ),
       ),
       floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
       floatingActionButton: Padding(
         padding: const EdgeInsets.only(right: 16, bottom: 16),
         child: FloatingActionButton(
-          tooltip: '新增區塊',
+          tooltip: '新增資料框',
+          backgroundColor: const Color(0xFF4F8DE8),
+          foregroundColor: Colors.white,
           onPressed: _addCategory,
           child: const Icon(Icons.add),
         ),
@@ -381,7 +641,7 @@ class _CategoryScreenState extends State<CategoryScreen> {
         builder: (context, snapshot) {
           final items = snapshot.data ?? const <EntryRow>[];
           if (items.isEmpty) {
-            return const Center(child: Text('這個區塊還沒有任何紀錄。'));
+            return const Center(child: Text('這個資料框還沒有任何紀錄。'));
           }
           return ListView.separated(
             itemCount: items.length,
@@ -472,6 +732,8 @@ class _EditEntryScreenState extends State<EditEntryScreen> {
   final _content = TextEditingController();
   bool _loading = true;
   bool _saving = false;
+  List<StoredAttachment> _attachments = const [];
+  final _picker = ImagePicker();
 
   @override
   void initState() {
@@ -484,9 +746,11 @@ class _EditEntryScreenState extends State<EditEntryScreen> {
       final row = await (widget.db.select(widget.db.entries)..where((t) => t.id.equals(widget.entryId!))).getSingle();
       _title.text = row.title;
       _content.text = row.content ?? '';
+      _attachments = await widget.db.getAttachmentsForEntry(widget.entryId!);
     } else {
       _title.text = widget.initialTitle ?? '';
       _content.text = widget.initialContent ?? '';
+      _attachments = const [];
     }
     if (mounted) setState(() => _loading = false);
   }
@@ -511,18 +775,136 @@ class _EditEntryScreenState extends State<EditEntryScreen> {
     final title = _title.text.trim().isEmpty ? _autoTitle(_content.text) : _title.text.trim();
     final content = _content.text.trim().isEmpty ? null : _content.text.trim();
 
+    late final String entryId;
     if (widget.entryId == null) {
-      await widget.db.createEntry(
+      entryId = await widget.db.createEntry(
         categoryId: widget.categoryId,
         title: title,
         content: content,
       );
     } else {
-      await widget.db.updateEntry(id: widget.entryId!, title: title, content: content);
+      entryId = widget.entryId!;
+      await widget.db.updateEntry(id: entryId, title: title, content: content);
     }
     if (!mounted) return;
     setState(() => _saving = false);
     Navigator.pop(context);
+  }
+
+  Future<void> _deleteEntry() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('確定刪除？'),
+        content: const Text('此筆資料將完全刪除，包含附件與紀錄。此操作無法復原。'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('刪除')),
+        ],
+      ),
+    );
+    if (confirmed != true || widget.entryId == null) return;
+
+    setState(() => _saving = true);
+    await widget.db.deleteEntry(widget.entryId!);
+    if (!mounted) return;
+    setState(() => _saving = false);
+    Navigator.pop(context);
+  }
+
+  Future<void> _pickAttachment() async {
+    final source = await showDialog<_AttachmentSource>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('新增附件'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.photo_library),
+              title: const Text('選擇圖片'),
+              subtitle: const Text('從相簿加入照片'),
+              onTap: () => Navigator.of(context).pop(_AttachmentSource.image),
+            ),
+            ListTile(
+              leading: const Icon(Icons.attach_file),
+              title: const Text('選擇檔案'),
+              subtitle: const Text('加入文件、音訊、其他檔案'),
+              onTap: () => Navigator.of(context).pop(_AttachmentSource.file),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (source == null) return;
+    if (widget.entryId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('請先先儲存主題，再加入附件。')),
+      );
+      return;
+    }
+
+    File? pickedFile;
+    if (source == _AttachmentSource.image) {
+      final picked = await _picker.pickImage(source: ImageSource.gallery);
+      if (picked != null) {
+        pickedFile = File(picked.path);
+      }
+    } else {
+      final result = await FilePicker.platform.pickFiles(allowMultiple: false);
+      if (result != null && result.files.single.path != null) {
+        pickedFile = File(result.files.single.path!);
+      }
+    }
+
+    if (pickedFile == null) return;
+
+    await widget.db.addAttachment(
+      entryId: widget.entryId!,
+      file: pickedFile,
+      originalName: p.basename(pickedFile.path),
+    );
+    _attachments = await widget.db.getAttachmentsForEntry(widget.entryId!);
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _openAttachment(StoredAttachment attachment) async {
+    final file = File(attachment.filePath);
+    if (!await file.exists()) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('檔案不存在')));
+      return;
+    }
+
+    final isImage = attachment.mimeType?.startsWith('image/') ?? false;
+    if (isImage) {
+      if (!mounted) return;
+      await Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => Scaffold(
+          appBar: AppBar(title: Text(attachment.originalName ?? '圖片預覽')),
+          body: InteractiveViewer(
+            panEnabled: true,
+            minScale: 1.0,
+            maxScale: 5.0,
+            child: Center(child: Image.file(file, fit: BoxFit.contain)),
+          ),
+        ),
+      ));
+      return;
+    }
+
+    final uri = Uri.file(file.path);
+    if (!await launchUrl(uri)) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('無法開啟檔案')));
+    }
+  }
+
+  Future<void> _deleteAttachment(String attachmentId) async {
+    await widget.db.deleteAttachment(attachmentId: attachmentId, entryId: widget.entryId!);
+    _attachments = await widget.db.getAttachmentsForEntry(widget.entryId!);
+    if (mounted) setState(() {});
   }
 
   @override
@@ -534,6 +916,12 @@ class _EditEntryScreenState extends State<EditEntryScreen> {
       appBar: AppBar(
         title: Text(widget.entryId == null ? '新增紀錄' : '編輯紀錄'),
         actions: [
+          if (widget.entryId != null)
+            IconButton(
+              tooltip: '刪除資料',
+              onPressed: _saving ? null : _deleteEntry,
+              icon: const Icon(Icons.delete_forever),
+            ),
           IconButton(onPressed: _saving ? null : _save, icon: const Icon(Icons.save)),
         ],
       ),
@@ -603,6 +991,81 @@ class _EditEntryScreenState extends State<EditEntryScreen> {
               ),
             ),
             const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _pickAttachment,
+                    icon: const Icon(Icons.attach_file),
+                    label: const Text('新增附件'),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            if (_attachments.isNotEmpty)
+              SizedBox(
+                height: 120,
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: _attachments.length,
+                  separatorBuilder: (_, __) => const SizedBox(width: 8),
+                  itemBuilder: (context, index) {
+                    final attachment = _attachments[index];
+                    final isImage = attachment.mimeType?.startsWith('image/') ?? false;
+                    final file = File(attachment.filePath);
+                    return Stack(
+                      children: [
+                        InkWell(
+                          borderRadius: BorderRadius.circular(12),
+                          onTap: () => _openAttachment(attachment),
+                          child: Container(
+                            width: 100,
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(12),
+                              color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                            ),
+                            child: isImage && file.existsSync()
+                                ? ClipRRect(
+                                    borderRadius: BorderRadius.circular(12),
+                                    child: Image.file(file, fit: BoxFit.cover),
+                                  )
+                                : Center(
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(8),
+                                      child: Column(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          const Icon(Icons.insert_drive_file),
+                                          const SizedBox(height: 4),
+                                          Text(
+                                            attachment.originalName ?? '檔案',
+                                            maxLines: 2,
+                                            overflow: TextOverflow.ellipsis,
+                                            textAlign: TextAlign.center,
+                                            style: const TextStyle(fontSize: 12),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                          ),
+                        ),
+                        Positioned(
+                          top: 4,
+                          right: 4,
+                          child: IconButton.filledTonal(
+                            iconSize: 18,
+                            onPressed: () => _deleteAttachment(attachment.id),
+                            icon: const Icon(Icons.close),
+                          ),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+              ),
+            const SizedBox(height: 12),
             SizedBox(
               width: double.infinity,
               child: FilledButton.icon(
@@ -617,6 +1080,8 @@ class _EditEntryScreenState extends State<EditEntryScreen> {
     );
   }
 }
+
+enum _AttachmentSource { image, file }
 
 class SearchScreen extends StatefulWidget {
   final AppDb db;
@@ -665,7 +1130,7 @@ class _SearchScreenState extends State<SearchScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('跨區塊搜尋')),
+      appBar: AppBar(title: const Text('跨資料框搜尋')),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
@@ -715,10 +1180,206 @@ class _SearchScreenState extends State<SearchScreen> {
                         final h = _hits[i];
                         return ListTile(
                           title: Text(h.title),
-                          subtitle: Text('區塊：${h.categoryName}'),
+                          subtitle: Text('資料框：${h.categoryName}'),
                         );
                       },
                     ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class IncomingShareScreen extends StatefulWidget {
+  final AppDb db;
+  final List<CategoryRow> categories;
+  final String? sharedText;
+  final List<SharedMediaFile> sharedFiles;
+
+  const IncomingShareScreen({
+    super.key,
+    required this.db,
+    required this.categories,
+    required this.sharedText,
+    required this.sharedFiles,
+  });
+
+  @override
+  State<IncomingShareScreen> createState() => _IncomingShareScreenState();
+}
+
+class _IncomingShareScreenState extends State<IncomingShareScreen> {
+  late final TextEditingController _titleController;
+  late final TextEditingController _contentController;
+  bool _saveText = true;
+  bool _saveFiles = true;
+  String? _selectedCategoryId;
+  bool _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedCategoryId = widget.categories.first.id;
+    final text = widget.sharedText?.trim();
+    _contentController = TextEditingController(text: text ?? '');
+    _titleController = TextEditingController(text: text != null ? _autoTitle(text) : '');
+    if (widget.sharedFiles.isEmpty) {
+      _saveFiles = false;
+    }
+    if (text == null || text.isEmpty) {
+      _saveText = false;
+    }
+  }
+
+  String _autoTitle(String content) {
+    final t = content.trim();
+    if (t.isEmpty) return '未命名';
+    final firstLine = t.split('\n').first.trim();
+    return firstLine.isEmpty ? '未命名' : (firstLine.length > 40 ? firstLine.substring(0, 40) : firstLine);
+  }
+
+  @override
+  void dispose() {
+    _titleController.dispose();
+    _contentController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _saveSharedContent() async {
+    if (_saving) return;
+    if (_selectedCategoryId == null) return;
+    setState(() => _saving = true);
+
+    final content = _saveText ? _contentController.text.trim() : null;
+    final title = _titleController.text.trim().isEmpty
+        ? _autoTitle(content ?? widget.sharedFiles.map((e) => e.path).join(' '))
+        : _titleController.text.trim();
+
+    final entryId = await widget.db.createEntry(
+      categoryId: _selectedCategoryId!,
+      title: title,
+      content: content,
+    );
+
+    if (_saveFiles) {
+      for (final file in widget.sharedFiles) {
+        final localFile = File(file.path);
+        if (await localFile.exists()) {
+          await widget.db.addAttachment(
+            entryId: entryId,
+            file: localFile,
+            originalName: p.basename(localFile.path),
+          );
+        }
+      }
+    }
+
+    if (!mounted) return;
+    setState(() => _saving = false);
+    Navigator.of(context).pop();
+  }
+
+  Widget _buildSharedFileTile(SharedMediaFile file) {
+    final name = p.basename(file.path);
+    return ListTile(
+      leading: const Icon(Icons.attach_file),
+      title: Text(name),
+      subtitle: Text(file.type.name),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('分享內容預覽'),
+        actions: [
+          IconButton(
+            onPressed: _saving ? null : _saveSharedContent,
+            icon: const Icon(Icons.save),
+            tooltip: '儲存到資料框',
+          ),
+        ],
+      ),
+      body: SafeArea(
+        child: Column(
+          children: [
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('請選擇要將分享內容存到哪個資料框：'),
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<String>(
+                      value: _selectedCategoryId,
+                      decoration: const InputDecoration(border: OutlineInputBorder(), labelText: '資料框'),
+                      items: widget.categories
+                          .map((cat) => DropdownMenuItem(value: cat.id, child: Text(cat.name)))
+                          .toList(),
+                      onChanged: (value) => setState(() => _selectedCategoryId = value),
+                    ),
+                    const SizedBox(height: 16),
+                    if (widget.sharedText != null && widget.sharedText!.trim().isNotEmpty) ...[
+                      Row(
+                        children: [
+                          Checkbox(value: _saveText, onChanged: (value) => setState(() => _saveText = value ?? false)),
+                          const Expanded(child: Text('將分享文字或連結存為正文')),
+                        ],
+                      ),
+                      const Padding(
+                        padding: EdgeInsets.only(bottom: 8),
+                        child: Text('如果分享內容是長網址，建議補上一兩句中文說明內容主題或用途。'),
+                      ),
+                      TextField(
+                        controller: _titleController,
+                        decoration: const InputDecoration(border: OutlineInputBorder(), labelText: '主題名稱'),
+                      ),
+                      const SizedBox(height: 8),
+                      TextField(
+                        controller: _contentController,
+                        minLines: 4,
+                        maxLines: 12,
+                        decoration: const InputDecoration(
+                          border: OutlineInputBorder(),
+                          labelText: '正文內容',
+                          hintText: '例如：這個影片是關於川西稻城亞丁旅行行程',
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                    ],
+                    if (widget.sharedFiles.isNotEmpty) ...[
+                      Row(
+                        children: [
+                          Checkbox(value: _saveFiles, onChanged: (value) => setState(() => _saveFiles = value ?? false)),
+                          const Expanded(child: Text('將分享檔案存為附件')),
+                        ],
+                      ),
+                      ListView.separated(
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        itemCount: widget.sharedFiles.length,
+                        separatorBuilder: (_, __) => const Divider(height: 1),
+                        itemBuilder: (context, index) => _buildSharedFileTile(widget.sharedFiles[index]),
+                      ),
+                      const SizedBox(height: 16),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              child: SizedBox(
+                width: double.infinity,
+                child: FilledButton(
+                  onPressed: _saving ? null : _saveSharedContent,
+                  child: Text(_saving ? '儲存中…' : '儲存到資料框'),
+                ),
+              ),
             ),
           ],
         ),
