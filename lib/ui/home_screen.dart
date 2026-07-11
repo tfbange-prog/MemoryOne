@@ -10,6 +10,8 @@ import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
 import 'package:path/path.dart' as p;
 import 'package:url_launcher/url_launcher.dart';
+import 'package:open_file/open_file.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../db/app_db.dart';
 import '../settings/app_settings.dart';
@@ -110,7 +112,7 @@ class _HomeScreenState extends State<HomeScreen> {
         .get();
     if (rows.isEmpty) return;
     final categories = rows
-        .map((r) => CategoryRow(id: r.id, name: r.name, updatedAt: r.updatedAt))
+        .map((r) => CategoryRow(id: r.id, name: r.name, updatedAt: r.updatedAt, entryCount: 0))
         .toList(growable: false);
     if (!mounted) return;
 
@@ -346,6 +348,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _categoryCard(CategoryRow item, {bool isDragging = false, bool isOverlay = false, bool isHighlighted = false}) {
     final accent = const Color(0xFFF6CFBE);
     final accentStrong = const Color(0xFFB9DCF2);
+    final entryCountLabel = item.entryCount == 1 ? '1 筆紀錄' : '${item.entryCount} 筆紀錄';
     return Material(
       color: isDragging ? Colors.white : null,
       elevation: isDragging ? 8 : 2,
@@ -413,27 +416,24 @@ class _HomeScreenState extends State<HomeScreen> {
                         if (name != null && name.isNotEmpty) {
                           await widget.db.renameCategory(id: item.id, name: name);
                         }
+                      } else if (value == 'reorder') {
+                        if (!mounted) return;
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('長按資料框即可拖曳重新排序')),
+                        );
                       }
                     },
                     itemBuilder: (_) => const [
                       PopupMenuItem(value: 'rename', child: Text('重命名')),
+                      PopupMenuItem(value: 'reorder', child: Text('長按拖曳排序')),
                     ],
                   ),
                 ],
               ),
               const SizedBox(height: 12),
               Text('更新：${_fmt.format(item.updatedAt)}', style: Theme.of(context).textTheme.bodySmall),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  const Icon(Icons.drag_handle, size: 18),
-                  const SizedBox(width: 4),
-                  Text(
-                    '長按拖曳排序',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
-                  ),
-                ],
-              ),
+              const SizedBox(height: 6),
+              Text(entryCountLabel, style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600)),
             ],
           ),
         ),
@@ -467,12 +467,11 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ),
         actions: [
-          if (kIsWeb || (!Platform.isAndroid && !Platform.isIOS))
-            IconButton(
-              tooltip: '從剪貼簿讀取(模擬分享)',
-              onPressed: _pasteFromClipboard,
-              icon: const Icon(Icons.paste),
-            ),
+          IconButton(
+            tooltip: '從剪貼簿讀取(模擬分享)',
+            onPressed: _pasteFromClipboard,
+            icon: const Icon(Icons.paste),
+          ),
           IconButton(
             tooltip: '新增資料框',
             onPressed: _addCategory,
@@ -504,15 +503,27 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ),
         child: StreamBuilder<List<CategoryRow>>(
-          stream: (widget.db.select(widget.db.categories)
-                ..orderBy([
-                  (t) => OrderingTerm(expression: t.sortOrder),
-                  (t) => OrderingTerm(expression: t.updatedAt, mode: OrderingMode.desc),
-                ]))
-              .watch()
-              .map((rows) => rows
-                  .map((r) => CategoryRow(id: r.id, name: r.name, updatedAt: r.updatedAt))
-                  .toList()),
+          stream: widget.db.customSelect(
+            '''
+            SELECT
+              c.id AS id,
+              c.name AS name,
+              c.updated_at AS updated_at,
+              COUNT(e.id) AS entry_count
+            FROM categories c
+            LEFT JOIN entries e ON e.category_id = c.id
+            GROUP BY c.id
+            ORDER BY c.sort_order, c.updated_at DESC
+            ''',
+            readsFrom: {widget.db.categories, widget.db.entries},
+          ).watch().map((rows) => rows
+              .map((row) => CategoryRow(
+                    id: row.read<String>('id'),
+                    name: row.read<String>('name'),
+                    updatedAt: row.read<DateTime>('updated_at'),
+                    entryCount: row.read<int>('entry_count'),
+                  ))
+              .toList(growable: false)),
           builder: (context, snapshot) {
             final items = snapshot.data ?? const <CategoryRow>[];
             if (items.isEmpty) {
@@ -546,16 +557,42 @@ class _HomeScreenState extends State<HomeScreen> {
               builder: (context, constraints) {
                 final spacing = 16.0;
                 final maxWidth = constraints.maxWidth;
-                final columns = (maxWidth / 220).floor().clamp(1, 5);
+                final isWideDesktop = maxWidth >= 900;
+                final columns = isWideDesktop ? 3 : 2;
                 final itemWidth = (maxWidth - (columns - 1) * spacing) / columns;
                 return SingleChildScrollView(
                   padding: const EdgeInsets.all(16),
-                  child: Wrap(
-                    spacing: spacing,
-                    runSpacing: 16,
-                    children: items
-                        .map((c) => SizedBox(width: itemWidth, child: _buildCategoryCard(c, items, itemWidth)))
-                        .toList(),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (items.length > 1)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 12),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFFFF2E8),
+                              borderRadius: BorderRadius.circular(999),
+                              border: Border.all(color: const Color(0xFFEDB38A)),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: const [
+                                Icon(Icons.drag_indicator, size: 16),
+                                SizedBox(width: 6),
+                                Text('長按資料框可拖曳重新排序'),
+                              ],
+                            ),
+                          ),
+                        ),
+                      Wrap(
+                        spacing: spacing,
+                        runSpacing: 16,
+                        children: items
+                            .map((c) => SizedBox(width: itemWidth, child: _buildCategoryCard(c, items, itemWidth)))
+                            .toList(),
+                      ),
+                    ],
                   ),
                 );
               },
@@ -582,8 +619,9 @@ class CategoryRow {
   final String id;
   final String name;
   final DateTime updatedAt;
+  final int entryCount;
 
-  CategoryRow({required this.id, required this.name, required this.updatedAt});
+  CategoryRow({required this.id, required this.name, required this.updatedAt, required this.entryCount});
 }
 
 class CategoryScreen extends StatefulWidget {
@@ -621,7 +659,17 @@ class _CategoryScreenState extends State<CategoryScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.categoryName),
+        title: Text(widget.categoryName, style: const TextStyle(color: Color(0xFF7397AB))),
+        iconTheme: const IconThemeData(color: Color(0xFF7397AB)),
+        flexibleSpace: Container(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [Color(0xFFFFD78A), Color(0xFFF4762D)],
+            ),
+          ),
+        ),
         actions: [
           IconButton(
             tooltip: '新增內容',
@@ -643,12 +691,12 @@ class _CategoryScreenState extends State<CategoryScreen> {
           if (items.isEmpty) {
             return const Center(child: Text('這個資料框還沒有任何紀錄。'));
           }
-          return ListView.separated(
+          return ListView.builder(
             itemCount: items.length,
-            separatorBuilder: (_, __) => const Divider(height: 1),
             itemBuilder: (context, i) {
               final e = items[i];
               final url = _extractUrl(e.content ?? '') ?? _extractUrl(e.title);
+              final isEven = i.isEven;
               Widget? trailing;
               if (url != null) {
                 final isYoutube = url.contains('youtube.com') || url.contains('youtu.be');
@@ -662,22 +710,30 @@ class _CategoryScreenState extends State<CategoryScreen> {
                 );
               }
 
-              return ListTile(
-                title: Text(e.title),
-                subtitle: Text('更新：${_fmt.format(e.updatedAt)}'),
-                trailing: trailing,
-                onTap: () async {
-                  await Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (_) => EditEntryScreen(
-                        db: widget.db,
-                        categoryId: widget.categoryId,
-                        categoryName: widget.categoryName,
-                        entryId: e.id,
+              return Container(
+                margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                  color: isEven ? const Color(0xFFFFF7E8) : const Color(0xFFF3F7FF),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border(left: BorderSide(color: isEven ? const Color(0xFFF0A24B) : const Color(0xFF5A8DFF), width: 4)),
+                ),
+                child: ListTile(
+                  title: Text(e.title),
+                  subtitle: Text('更新：${_fmt.format(e.updatedAt)}'),
+                  trailing: trailing,
+                  onTap: () async {
+                    await Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => EditEntryScreen(
+                          db: widget.db,
+                          categoryId: widget.categoryId,
+                          categoryName: widget.categoryName,
+                          entryId: e.id,
+                        ),
                       ),
-                    ),
-                  );
-                },
+                    );
+                  },
+                ),
               );
             },
           );
@@ -738,6 +794,9 @@ class _EditEntryScreenState extends State<EditEntryScreen> {
   @override
   void initState() {
     super.initState();
+    _title.addListener(() {
+      if (mounted) setState(() {});
+    });
     _init();
   }
 
@@ -894,11 +953,41 @@ class _EditEntryScreenState extends State<EditEntryScreen> {
       return;
     }
 
-    final uri = Uri.file(file.path);
-    if (!await launchUrl(uri)) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('無法開啟檔案')));
+    final result = await OpenFile.open(
+      file.path,
+      type: attachment.mimeType,
+    );
+
+    if (result.type == ResultType.done) {
+      return;
     }
+
+    if (!mounted) return;
+
+    if (Platform.isAndroid || Platform.isIOS) {
+      final shareResult = await Share.shareXFiles(
+        [
+          XFile(
+            file.path,
+            mimeType: attachment.mimeType,
+            name: attachment.originalName ?? p.basename(file.path),
+          ),
+        ],
+        subject: attachment.originalName ?? p.basename(file.path),
+      );
+
+      if (shareResult.status == ShareResultStatus.success) {
+        return;
+      }
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          '無法直接開啟，請改用分享或在其他應用程式中開啟。${result.message.isEmpty ? '' : '(${result.message})'}',
+        ),
+      ),
+    );
   }
 
   Future<void> _deleteAttachment(String attachmentId) async {
@@ -912,9 +1001,26 @@ class _EditEntryScreenState extends State<EditEntryScreen> {
     if (_loading) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
+    final currentTitle = _title.text.trim().isEmpty ? '未命名' : _title.text.trim();
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.entryId == null ? '新增紀錄' : '編輯紀錄'),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('資料框：${widget.categoryName}', style: const TextStyle(fontSize: 14, color: Color(0xFF7397AB))),
+            Text('標題：$currentTitle', style: const TextStyle(fontSize: 12, color: Color(0xFF7397AB))),
+          ],
+        ),
+        iconTheme: const IconThemeData(color: Color(0xFF7397AB)),
+        flexibleSpace: Container(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [Color(0xFFFFD78A), Color(0xFFF4762D)],
+            ),
+          ),
+        ),
         actions: [
           if (widget.entryId != null)
             IconButton(
@@ -1052,10 +1158,12 @@ class _EditEntryScreenState extends State<EditEntryScreen> {
                           ),
                         ),
                         Positioned(
-                          top: 4,
+                          bottom: 4,
                           right: 4,
                           child: IconButton.filledTonal(
-                            iconSize: 18,
+                            iconSize: 14,
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
                             onPressed: () => _deleteAttachment(attachment.id),
                             icon: const Icon(Icons.close),
                           ),
@@ -1181,6 +1289,19 @@ class _SearchScreenState extends State<SearchScreen> {
                         return ListTile(
                           title: Text(h.title),
                           subtitle: Text('資料框：${h.categoryName}'),
+                          trailing: const Icon(Icons.chevron_right),
+                          onTap: () async {
+                            await Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (_) => EditEntryScreen(
+                                  db: widget.db,
+                                  categoryId: h.categoryId,
+                                  categoryName: h.categoryName,
+                                  entryId: h.entryId,
+                                ),
+                              ),
+                            );
+                          },
                         );
                       },
                     ),
