@@ -555,21 +555,22 @@ class _HomeScreenState extends State<HomeScreen> {
             }
             return LayoutBuilder(
               builder: (context, constraints) {
-                final spacing = 16.0;
+                final spacing = 12.0;
                 final maxWidth = constraints.maxWidth;
-                final isWideDesktop = maxWidth >= 900;
-                final columns = isWideDesktop ? 3 : 2;
-                final itemWidth = (maxWidth - (columns - 1) * spacing) / columns;
+                final isPhone = maxWidth < 600;
+                final columns = isPhone ? 2 : 3;
+                final availableWidth = maxWidth - (columns - 1) * spacing;
+                final itemWidth = availableWidth / columns;
                 return SingleChildScrollView(
-                  padding: const EdgeInsets.all(16),
+                  padding: const EdgeInsets.fromLTRB(12, 12, 12, 16),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       if (items.length > 1)
                         Padding(
-                          padding: const EdgeInsets.only(bottom: 12),
+                          padding: const EdgeInsets.only(bottom: 10),
                           child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
                             decoration: BoxDecoration(
                               color: const Color(0xFFFFF2E8),
                               borderRadius: BorderRadius.circular(999),
@@ -578,16 +579,16 @@ class _HomeScreenState extends State<HomeScreen> {
                             child: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: const [
-                                Icon(Icons.drag_indicator, size: 16),
-                                SizedBox(width: 6),
-                                Text('長按資料框可拖曳重新排序'),
+                                Icon(Icons.drag_indicator, size: 15),
+                                SizedBox(width: 4),
+                                Text('長按資料框可拖曳重新排序', style: TextStyle(fontSize: 12)),
                               ],
                             ),
                           ),
                         ),
                       Wrap(
                         spacing: spacing,
-                        runSpacing: 16,
+                        runSpacing: 12,
                         children: items
                             .map((c) => SizedBox(width: itemWidth, child: _buildCategoryCard(c, items, itemWidth)))
                             .toList(),
@@ -1033,8 +1034,11 @@ class _EditEntryScreenState extends State<EditEntryScreen> {
       ),
       body: Padding(
         padding: const EdgeInsets.all(16),
-        child: Column(
-          children: [
+        child: SingleChildScrollView(
+          padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom + 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
             ValueListenableBuilder<TextEditingValue>(
               valueListenable: _content,
               builder: (context, value, child) {
@@ -1083,7 +1087,8 @@ class _EditEntryScreenState extends State<EditEntryScreen> {
               ),
             ),
             const SizedBox(height: 12),
-            Expanded(
+            SizedBox(
+              height: 260,
               child: TextField(
                 controller: _content,
                 maxLines: null,
@@ -1104,6 +1109,22 @@ class _EditEntryScreenState extends State<EditEntryScreen> {
                     onPressed: _pickAttachment,
                     icon: const Icon(Icons.attach_file),
                     label: const Text('新增附件'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: _copyEntryContent,
+                    icon: const Icon(Icons.copy),
+                    label: const Text('複製內容'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: _shareEntry,
+                    icon: const Icon(Icons.share),
+                    label: const Text('分享整筆'),
                   ),
                 ),
               ],
@@ -1184,7 +1205,51 @@ class _EditEntryScreenState extends State<EditEntryScreen> {
             ),
           ],
         ),
+       ),
       ),
+    );
+  }
+
+  Future<void> _copyEntryContent() async {
+    final title = _title.text.trim();
+    final content = _content.text.trim();
+    final text = '''資料框：${widget.categoryName}
+標題：$title
+
+$content''';
+
+    await Clipboard.setData(ClipboardData(text: text));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('已複製整筆資料')),
+    );
+  }
+
+  Future<void> _shareEntry() async {
+    final title = _title.text.trim();
+    final content = _content.text.trim();
+    final text = '''資料框：${widget.categoryName}
+標題：$title
+
+$content''';
+
+    final files = _attachments.map((attachment) {
+      return XFile(
+        attachment.filePath,
+        mimeType: attachment.mimeType,
+        name: attachment.originalName ?? p.basename(attachment.filePath),
+      );
+    }).toList();
+
+    if (files.isEmpty) {
+      await Share.share(text, subject: '${widget.categoryName} / $title');
+      return;
+    }
+
+    await Share.shareXFiles(
+      files,
+      text: text,
+      subject: '${widget.categoryName} / $title',
     );
   }
 }
