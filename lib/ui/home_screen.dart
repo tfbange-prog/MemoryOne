@@ -555,7 +555,7 @@ class _HomeScreenState extends State<HomeScreen> {
             }
             return LayoutBuilder(
               builder: (context, constraints) {
-                final spacing = 12.0;
+                final spacing = 6.0;
                 final maxWidth = constraints.maxWidth;
                 final isPhone = maxWidth < 600;
                 final columns = isPhone ? 2 : 3;
