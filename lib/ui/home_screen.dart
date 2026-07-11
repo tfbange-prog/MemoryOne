@@ -553,51 +553,16 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               );
             }
-            return LayoutBuilder(
-              builder: (context, constraints) {
-                final spacing = 6.0;
-                final maxWidth = constraints.maxWidth;
-                final isPhone = maxWidth < 600;
-                final columns = isPhone ? 2 : 3;
-                final availableWidth = maxWidth - (columns - 1) * spacing;
-                final itemWidth = availableWidth / columns;
-                return SingleChildScrollView(
-                  padding: const EdgeInsets.fromLTRB(12, 12, 12, 16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      if (items.length > 1)
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 10),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFFFFF2E8),
-                              borderRadius: BorderRadius.circular(999),
-                              border: Border.all(color: const Color(0xFFEDB38A)),
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: const [
-                                Icon(Icons.drag_indicator, size: 15),
-                                SizedBox(width: 4),
-                                Text('長按資料框可拖曳重新排序', style: TextStyle(fontSize: 12)),
-                              ],
-                            ),
-                          ),
-                        ),
-                      Wrap(
-                        spacing: spacing,
-                        runSpacing: 12,
-                        children: items
-                            .map((c) => SizedBox(width: itemWidth, child: _buildCategoryCard(c, items, itemWidth)))
-                            .toList(),
-                      ),
-                    ],
-                  ),
-                );
-              },
-            );
+return GridView.count(
+              padding: const EdgeInsets.fromLTRB(12, 12, 12, 16),
+              crossAxisCount: 2,
+              mainAxisSpacing: 6,
+              crossAxisSpacing: 6,
+              childAspectRatio: 1.0,
+              children: items
+                  .map((c) => _buildCategoryCard(c, items, 160))
+                  .toList(),
+            );          
           },
         ),
       ),
