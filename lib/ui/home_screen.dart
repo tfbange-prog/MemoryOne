@@ -17,10 +17,34 @@ import '../db/app_db.dart';
 import '../settings/app_settings.dart';
 import 'package:receive_sharing_intent/receive_sharing_intent.dart';
 
-String? _extractUrl(String text) {
-  final regExp = RegExp(r'https?://[a-zA-Z0-9\-\.]+\.[a-zA-Z]{2,}(?:/[^ \s]*)?');
-  final match = regExp.firstMatch(text);
-  return match?.group(0);
+String? extractUrl(String text) {
+  final normalized = text
+      .replaceAll('\u00A0', ' ')
+      .replaceAll('\r', ' ')
+      .replaceAll('\n', ' ')
+      .trim();
+  if (normalized.isEmpty) return null;
+
+  final patterns = <RegExp>[
+    RegExp(r'https?://[^\s<>"\)\]\}]*'),
+  ];
+
+  for (final pattern in patterns) {
+    for (final match in pattern.allMatches(normalized)) {
+      final raw = match.group(0)?.trim();
+      if (raw == null || raw.isEmpty) continue;
+      final cleaned = raw.replaceAll(RegExp(r'[\.,;:!?\)\]\}]+$'), '');
+      if (cleaned.isEmpty) continue;
+      return cleaned;
+    }
+  }
+
+  return null;
+}
+
+String buildLinkLabel(String url) {
+  if (url.contains('youtube.com') || url.contains('youtu.be')) return '播放影片';
+  return '開啟連結';
 }
 
 class DisplayNameParts {
@@ -184,28 +208,58 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _addCategory() async {
     final controller = TextEditingController();
+    String? errorText;
     final name = await showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('新增資料框'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(labelText: '資料框名稱'),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, controller.text.trim()),
-            child: const Text('新增'),
-          ),
-        ],
-      ),
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('新增資料框'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: controller,
+                    autofocus: true,
+                    decoration: InputDecoration(
+                      labelText: '資料框名稱',
+                      errorText: errorText,
+                    ),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
+                FilledButton(
+                  onPressed: () {
+                    final text = controller.text.trim();
+                    if (text.isEmpty) {
+                      setDialogState(() => errorText = '請輸入資料框名稱');
+                      return;
+                    }
+                    Navigator.pop(context, text);
+                  },
+                  child: const Text('新增'),
+                ),
+              ],
+            );
+          },
+        );
+      },
     );
+
     if (name == null || name.trim().isEmpty) return;
-    await widget.db.createCategory(name: name.trim());
-    if (!mounted) return;
-    setState(() {});
+
+    try {
+      await widget.db.createCategory(name: name.trim());
+      if (!mounted) return;
+      setState(() {});
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('資料框已新增')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('新增資料框失敗：${e.toString()}')));
+    }
   }
 
   Future<void> _attemptDeleteCategory(String categoryId, String categoryName) async {
@@ -452,6 +506,98 @@ class _HomeScreenState extends State<HomeScreen> {
     _openIncomingShareScreen(sharedText: text, sharedFiles: const []);
   }
 
+  Future<void> _showBackupOptions() async {
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('資料備份與還原'),
+        content: const Text('可將整份資料備份成 zip 檔；手動上傳到雲端時會使用固定檔名，方便每次覆蓋同一份備份。'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
+          TextButton(onPressed: () => Navigator.pop(context, 'backup'), child: const Text('備份到本機')),
+          TextButton(onPressed: () => Navigator.pop(context, 'cloud'), child: const Text('上傳雲端')),
+          FilledButton(onPressed: () => Navigator.pop(context, 'restore'), child: const Text('從備份還原')),
+        ],
+      ),
+    );
+
+    if (choice == 'backup') {
+      await _backupAllData();
+    } else if (choice == 'cloud') {
+      await _uploadBackupToCloud();
+    } else if (choice == 'restore') {
+      await _restoreFromBackup();
+    }
+  }
+
+  Future<void> _backupAllData() async {
+    try {
+      final tempFile = await widget.db.exportFullBackupArchive(fileName: 'friends_vault_full_backup.zip');
+      final savePath = await FilePicker.platform.saveFile(
+        dialogTitle: '儲存整份資料庫備份',
+        fileName: 'friends_vault_full_backup.zip',
+        type: FileType.custom,
+        allowedExtensions: ['zip'],
+      );
+      if (savePath == null || savePath.trim().isEmpty) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已取消備份')));
+        return;
+      }
+
+      final targetFile = File(savePath);
+      if (await targetFile.exists()) {
+        await targetFile.delete();
+      }
+      await tempFile.copy(savePath);
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('整份資料庫備份已儲存到你選擇的位置。')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('備份失敗：${e.toString()}')));
+    }
+  }
+
+  Future<void> _uploadBackupToCloud() async {
+    try {
+      final file = await widget.db.exportFullBackupArchive(fileName: 'friends_vault_cloud_backup.zip');
+      await Share.shareXFiles(
+        [XFile(file.path)],
+        text: '請把這份備份上傳到你的雲端空間，並覆蓋原本的同名檔：friends_vault_cloud_backup.zip',
+        subject: 'Friends Vault 雲端備份',
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已生成雲端備份檔，請在雲端 app 中覆蓋同名檔。')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('上傳雲端失敗：${e.toString()}')));
+    }
+  }
+
+  Future<void> _restoreFromBackup() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['zip'],
+      );
+      if (result == null || result.files.isEmpty) {
+        return;
+      }
+      final filePath = result.files.single.path;
+      if (filePath == null) {
+        return;
+      }
+      await widget.db.importBackupArchive(archiveFile: File(filePath));
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('備份已成功還原')));
+      setState(() {});
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('還原失敗：${e.toString()}')));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -486,6 +632,21 @@ class _HomeScreenState extends State<HomeScreen> {
             tooltip: '字體大小',
             onPressed: _editFontScale,
             icon: const Icon(Icons.format_size),
+          ),
+          IconButton(
+            tooltip: '上傳雲端',
+            onPressed: _uploadBackupToCloud,
+            icon: const Icon(Icons.cloud_upload_outlined),
+          ),
+          IconButton(
+            tooltip: '下載完整備份',
+            onPressed: _backupAllData,
+            icon: const Icon(Icons.download_outlined),
+          ),
+          IconButton(
+            tooltip: '備份/還原',
+            onPressed: _showBackupOptions,
+            icon: const Icon(Icons.backup_outlined),
           ),
           IconButton(
             tooltip: '搜尋',
@@ -553,16 +714,51 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               );
             }
-return GridView.count(
-              padding: const EdgeInsets.fromLTRB(12, 12, 12, 16),
-              crossAxisCount: 2,
-              mainAxisSpacing: 6,
-              crossAxisSpacing: 6,
-              childAspectRatio: 1.0,
-              children: items
-                  .map((c) => _buildCategoryCard(c, items, 160))
-                  .toList(),
-            );          
+            return LayoutBuilder(
+              builder: (context, constraints) {
+                final spacing = 12.0;
+                final maxWidth = constraints.maxWidth;
+                final isPhone = maxWidth < 600;
+                final columns = isPhone ? 2 : 3;
+                final availableWidth = maxWidth - (columns - 1) * spacing;
+                final itemWidth = availableWidth / columns;
+                return SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(12, 12, 12, 16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (items.length > 1)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 10),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFFFF2E8),
+                              borderRadius: BorderRadius.circular(999),
+                              border: Border.all(color: const Color(0xFFEDB38A)),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: const [
+                                Icon(Icons.drag_indicator, size: 15),
+                                SizedBox(width: 4),
+                                Text('長按資料框可拖曳重新排序', style: TextStyle(fontSize: 12)),
+                              ],
+                            ),
+                          ),
+                        ),
+                      Wrap(
+                        spacing: spacing,
+                        runSpacing: 12,
+                        children: items
+                            .map((c) => SizedBox(width: itemWidth, child: _buildCategoryCard(c, items, itemWidth)))
+                            .toList(),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            );
           },
         ),
       ),
@@ -621,6 +817,51 @@ class _CategoryScreenState extends State<CategoryScreen> {
     );
   }
 
+  Future<void> _exportCurrentCategory() async {
+    try {
+      final file = await widget.db.exportCategoryArchive(categoryId: widget.categoryId);
+      await Share.shareXFiles(
+        [XFile(file.path)],
+        text: '這是資料框「${widget.categoryName}」的匯出檔，可直接寄出或存到雲端。',
+        subject: 'Friends Vault 資料框匯出',
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('資料框匯出檔已建立，請選擇分享目標。')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('匯出失敗：${e.toString()}')));
+    }
+  }
+
+  Future<void> _downloadCurrentCategoryArchive() async {
+    try {
+      final file = await widget.db.exportCategoryArchive(categoryId: widget.categoryId);
+      final safeName = widget.categoryName.replaceAll(RegExp(r'[<>:"/\\|?*]'), '_');
+      final savePath = await FilePicker.platform.saveFile(
+        dialogTitle: '儲存資料框備份',
+        fileName: 'friends_vault_category_${safeName}.zip',
+        type: FileType.custom,
+        allowedExtensions: ['zip'],
+      );
+      if (savePath == null || savePath.trim().isEmpty) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已取消儲存資料框備份')));
+        return;
+      }
+
+      final targetFile = File(savePath);
+      if (await targetFile.exists()) {
+        await targetFile.delete();
+      }
+      await file.copy(savePath);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('資料框備份已儲存到你選擇的位置。')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('儲存失敗：${e.toString()}')));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -637,6 +878,16 @@ class _CategoryScreenState extends State<CategoryScreen> {
           ),
         ),
         actions: [
+          IconButton(
+            tooltip: '匯出此資料框',
+            onPressed: _exportCurrentCategory,
+            icon: const Icon(Icons.share_outlined),
+          ),
+          IconButton(
+            tooltip: '下載資料框備份',
+            onPressed: _downloadCurrentCategoryArchive,
+            icon: const Icon(Icons.download_outlined),
+          ),
           IconButton(
             tooltip: '新增內容',
             onPressed: _addEntry,
@@ -661,7 +912,7 @@ class _CategoryScreenState extends State<CategoryScreen> {
             itemCount: items.length,
             itemBuilder: (context, i) {
               final e = items[i];
-              final url = _extractUrl(e.content ?? '') ?? _extractUrl(e.title);
+              final url = extractUrl(e.content ?? '') ?? extractUrl(e.title);
               final isEven = i.isEven;
               Widget? trailing;
               if (url != null) {
@@ -672,7 +923,7 @@ class _CategoryScreenState extends State<CategoryScreen> {
                     color: isYoutube ? Colors.red : null,
                   ),
                   onPressed: () => launchUrl(Uri.parse(url)),
-                  tooltip: isYoutube ? '播放影片' : '開啟連結',
+                  tooltip: buildLinkLabel(url),
                 );
               }
 
@@ -967,14 +1218,21 @@ class _EditEntryScreenState extends State<EditEntryScreen> {
     if (_loading) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
+
     final currentTitle = _title.text.trim().isEmpty ? '未命名' : _title.text.trim();
     return Scaffold(
       appBar: AppBar(
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('資料框：${widget.categoryName}', style: const TextStyle(fontSize: 14, color: Color(0xFF7397AB))),
-            Text('標題：$currentTitle', style: const TextStyle(fontSize: 12, color: Color(0xFF7397AB))),
+            Text(
+              '資料框：${widget.categoryName}',
+              style: const TextStyle(fontSize: 14, color: Color(0xFF7397AB)),
+            ),
+            Text(
+              '標題：$currentTitle',
+              style: const TextStyle(fontSize: 12, color: Color(0xFF7397AB)),
+            ),
           ],
         ),
         iconTheme: const IconThemeData(color: Color(0xFF7397AB)),
@@ -1004,173 +1262,175 @@ class _EditEntryScreenState extends State<EditEntryScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-            ValueListenableBuilder<TextEditingValue>(
-              valueListenable: _content,
-              builder: (context, value, child) {
-                final url = _extractUrl(value.text) ?? _extractUrl(_title.text);
-                if (url == null) return const SizedBox.shrink();
-                final isYoutube = url.contains('youtube.com') || url.contains('youtu.be');
-                return Padding(
-                  padding: const EdgeInsets.only(bottom: 12),
-                  child: InkWell(
-                    onTap: () => launchUrl(Uri.parse(url)),
-                    borderRadius: BorderRadius.circular(8),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                      decoration: BoxDecoration(
-                        color: Theme.of(context).colorScheme.primaryContainer,
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(isYoutube ? Icons.play_circle_fill : Icons.open_in_new, 
-                            color: Theme.of(context).colorScheme.onPrimaryContainer),
-                          const SizedBox(width: 8),
-                          Flexible(
-                            child: Text(
-                              isYoutube ? '播放 YouTube 影片' : '開啟連結',
-                              style: TextStyle(
-                                color: Theme.of(context).colorScheme.onPrimaryContainer,
-                                fontWeight: FontWeight.bold,
-                              ),
-                              overflow: TextOverflow.ellipsis,
+              ValueListenableBuilder<TextEditingValue>(
+                valueListenable: _content,
+                builder: (context, value, child) {
+                  final url = extractUrl(value.text) ?? extractUrl(_title.text);
+                  if (url == null) return const SizedBox.shrink();
+                  final isYoutube = url.contains('youtube.com') || url.contains('youtu.be');
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: InkWell(
+                      onTap: () => launchUrl(Uri.parse(url)),
+                      borderRadius: BorderRadius.circular(8),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: Theme.of(context).colorScheme.primaryContainer,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              isYoutube ? Icons.play_circle_fill : Icons.open_in_new,
+                              color: Theme.of(context).colorScheme.onPrimaryContainer,
                             ),
-                          ),
-                        ],
+                            const SizedBox(width: 8),
+                            Flexible(
+                              child: Text(
+                                isYoutube ? '播放 YouTube 影片' : '開啟連結',
+                                style: TextStyle(
+                                  color: Theme.of(context).colorScheme.onPrimaryContainer,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
-                  ),
-                );
-              },
-            ),
-            TextField(
-              controller: _title,
-              decoration: const InputDecoration(
-                labelText: '標題（可留空自動抓）',
-                border: OutlineInputBorder(),
+                  );
+                },
               ),
-            ),
-            const SizedBox(height: 12),
-            SizedBox(
-              height: 260,
-              child: TextField(
-                controller: _content,
-                maxLines: null,
-                expands: true,
-                textAlignVertical: TextAlignVertical.top,
+              TextField(
+                controller: _title,
                 decoration: const InputDecoration(
-                  labelText: '內容',
-                  alignLabelWithHint: true,
+                  labelText: '標題（可留空自動抓）',
                   border: OutlineInputBorder(),
                 ),
               ),
-            ),
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: _pickAttachment,
-                    icon: const Icon(Icons.attach_file),
-                    label: const Text('新增附件'),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: FilledButton.icon(
-                    onPressed: _copyEntryContent,
-                    icon: const Icon(Icons.copy),
-                    label: const Text('複製內容'),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: FilledButton.icon(
-                    onPressed: _shareEntry,
-                    icon: const Icon(Icons.share),
-                    label: const Text('分享整筆'),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            if (_attachments.isNotEmpty)
+              const SizedBox(height: 12),
               SizedBox(
-                height: 120,
-                child: ListView.separated(
-                  scrollDirection: Axis.horizontal,
-                  itemCount: _attachments.length,
-                  separatorBuilder: (_, __) => const SizedBox(width: 8),
-                  itemBuilder: (context, index) {
-                    final attachment = _attachments[index];
-                    final isImage = attachment.mimeType?.startsWith('image/') ?? false;
-                    final file = File(attachment.filePath);
-                    return Stack(
-                      children: [
-                        InkWell(
-                          borderRadius: BorderRadius.circular(12),
-                          onTap: () => _openAttachment(attachment),
-                          child: Container(
-                            width: 100,
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(12),
-                              color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                            ),
-                            child: isImage && file.existsSync()
-                                ? ClipRRect(
-                                    borderRadius: BorderRadius.circular(12),
-                                    child: Image.file(file, fit: BoxFit.cover),
-                                  )
-                                : Center(
-                                    child: Padding(
-                                      padding: const EdgeInsets.all(8),
-                                      child: Column(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          const Icon(Icons.insert_drive_file),
-                                          const SizedBox(height: 4),
-                                          Text(
-                                            attachment.originalName ?? '檔案',
-                                            maxLines: 2,
-                                            overflow: TextOverflow.ellipsis,
-                                            textAlign: TextAlign.center,
-                                            style: const TextStyle(fontSize: 12),
-                                          ),
-                                        ],
+                height: 260,
+                child: TextField(
+                  controller: _content,
+                  maxLines: null,
+                  expands: true,
+                  textAlignVertical: TextAlignVertical.top,
+                  decoration: const InputDecoration(
+                    labelText: '內容',
+                    alignLabelWithHint: true,
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: _pickAttachment,
+                      icon: const Icon(Icons.attach_file),
+                      label: const Text('新增附件'),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: _copyEntryContent,
+                      icon: const Icon(Icons.copy),
+                      label: const Text('複製內容'),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: _shareEntry,
+                      icon: const Icon(Icons.share),
+                      label: const Text('分享整筆'),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              if (_attachments.isNotEmpty)
+                SizedBox(
+                  height: 120,
+                  child: ListView.separated(
+                    scrollDirection: Axis.horizontal,
+                    itemCount: _attachments.length,
+                    separatorBuilder: (_, __) => const SizedBox(width: 8),
+                    itemBuilder: (context, index) {
+                      final attachment = _attachments[index];
+                      final isImage = attachment.mimeType?.startsWith('image/') ?? false;
+                      final file = File(attachment.filePath);
+                      return Stack(
+                        children: [
+                          InkWell(
+                            borderRadius: BorderRadius.circular(12),
+                            onTap: () => _openAttachment(attachment),
+                            child: Container(
+                              width: 100,
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(12),
+                                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                              ),
+                              child: isImage && file.existsSync()
+                                  ? ClipRRect(
+                                      borderRadius: BorderRadius.circular(12),
+                                      child: Image.file(file, fit: BoxFit.cover),
+                                    )
+                                  : Center(
+                                      child: Padding(
+                                        padding: const EdgeInsets.all(8),
+                                        child: Column(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            const Icon(Icons.insert_drive_file),
+                                            const SizedBox(height: 4),
+                                            Text(
+                                              attachment.originalName ?? '檔案',
+                                              maxLines: 2,
+                                              overflow: TextOverflow.ellipsis,
+                                              textAlign: TextAlign.center,
+                                              style: const TextStyle(fontSize: 12),
+                                            ),
+                                          ],
+                                        ),
                                       ),
                                     ),
-                                  ),
+                            ),
                           ),
-                        ),
-                        Positioned(
-                          bottom: 4,
-                          right: 4,
-                          child: IconButton.filledTonal(
-                            iconSize: 14,
-                            padding: EdgeInsets.zero,
-                            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-                            onPressed: () => _deleteAttachment(attachment.id),
-                            icon: const Icon(Icons.close),
+                          Positioned(
+                            bottom: 4,
+                            right: 4,
+                            child: IconButton.filledTonal(
+                              iconSize: 14,
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                              onPressed: () => _deleteAttachment(attachment.id),
+                              icon: const Icon(Icons.close),
+                            ),
                           ),
-                        ),
-                      ],
-                    );
-                  },
+                        ],
+                      );
+                    },
+                  ),
+                ),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  onPressed: _saving ? null : _save,
+                  icon: const Icon(Icons.save),
+                  label: Text(_saving ? '儲存中…' : '儲存'),
                 ),
               ),
-            const SizedBox(height: 12),
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton.icon(
-                onPressed: _saving ? null : _save,
-                icon: const Icon(Icons.save),
-                label: Text(_saving ? '儲存中…' : '儲存'),
-              ),
-            ),
-          ],
+            ],
+          ),
         ),
-       ),
       ),
     );
   }
@@ -1407,11 +1667,14 @@ class _IncomingShareScreenState extends State<IncomingShareScreen> {
     final title = _titleController.text.trim().isEmpty
         ? _autoTitle(content ?? widget.sharedFiles.map((e) => e.path).join(' '))
         : _titleController.text.trim();
+    final detectedUrl = content != null ? extractUrl(content) : null;
 
     final entryId = await widget.db.createEntry(
       categoryId: _selectedCategoryId!,
       title: title,
       content: content,
+      sourceText: content,
+      sourceUrl: detectedUrl ?? extractUrl(_titleController.text),
     );
 
     if (_saveFiles) {

@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
 import 'db/app_db.dart';
@@ -80,7 +81,9 @@ class _BootstrapperState extends State<_Bootstrapper> {
   }
 
   Future<void> _init() async {
-    await _db.bootstrap();
+    if (!kIsWeb) {
+      await _db.bootstrap();
+    }
     _displayName = await AppSettings.getDisplayName();
     _fontScale = await AppSettings.getFontScale();
     if (mounted) setState(() => _ready = true);

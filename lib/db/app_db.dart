@@ -1,5 +1,9 @@
+import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/foundation.dart' show kIsWeb;
 
+import 'package:archive/archive.dart';
+import 'package:archive/archive_io.dart';
 import 'package:drift/drift.dart';
 import 'package:drift_flutter/drift_flutter.dart';
 import 'package:path/path.dart' as p;
@@ -58,20 +62,30 @@ class AppDb extends _$AppDb {
   int get schemaVersion => 1;
 
   static QueryExecutor _openConnection() {
+    if (kIsWeb) {
+      return driftDatabase(
+        name: 'friends_vault.sqlite',
+        web: DriftWebOptions(
+          sqlite3Wasm: Uri.parse('sqlite3.wasm'),
+          driftWorker: Uri.parse('drift_worker.js'),
+        ),
+      );
+    }
+
     return driftDatabase(
       name: 'friends_vault.sqlite',
-      native: const DriftNativeOptions(
-        // Keep defaults; sqlite3_flutter_libs provides the engine.
-      ),
+      native: const DriftNativeOptions(),
     );
   }
 
   Future<void> bootstrap() async {
-    // Ensure attachments dir exists
-    final docs = await getApplicationDocumentsDirectory();
-    final dir = Directory(p.join(docs.path, 'attachments'));
-    if (!await dir.exists()) {
-      await dir.create(recursive: true);
+    // Ensure attachments dir exists (skip on web where path_provider isn't available)
+    if (!kIsWeb) {
+      final docs = await getApplicationDocumentsDirectory();
+      final dir = Directory(p.join(docs.path, 'attachments'));
+      if (!await dir.exists()) {
+        await dir.create(recursive: true);
+      }
     }
 
     // Create FTS table + triggers once.
@@ -313,6 +327,286 @@ END;
     }
     await (delete(attachments)..where((t) => t.entryId.equals(id))).go();
     await (delete(entries)..where((t) => t.id.equals(id))).go();
+  }
+
+  Future<File> exportCategoryArchive({required String categoryId, String? fileName}) async {
+    final docs = await getApplicationDocumentsDirectory();
+    final tempDir = await getTemporaryDirectory();
+    final targetPath = p.join(
+      tempDir.path,
+      fileName ?? 'friends_vault_category_${DateTime.now().millisecondsSinceEpoch}.zip',
+    );
+    final targetFile = File(targetPath);
+    if (await targetFile.exists()) {
+      await targetFile.delete();
+    }
+
+    final category = await (select(categories)..where((t) => t.id.equals(categoryId))).getSingleOrNull();
+    if (category == null) {
+      throw StateError('資料框不存在');
+    }
+
+    final entryRows = await (select(entries)
+          ..where((t) => t.categoryId.equals(categoryId))
+          ..orderBy([(t) => OrderingTerm(expression: t.createdAt, mode: OrderingMode.asc)]))
+        .get();
+
+    final entryIds = entryRows.map((entry) => entry.id).toList();
+    final attachmentRows = entryIds.isEmpty
+        ? <Attachment>[]
+        : await (select(attachments)
+              ..where((t) => t.entryId.isIn(entryIds))
+              ..orderBy([(t) => OrderingTerm(expression: t.createdAt, mode: OrderingMode.asc)]))
+            .get();
+
+    final attachmentManifest = <Map<String, dynamic>>[];
+    final archive = Archive();
+
+    for (final attachment in attachmentRows) {
+      final sourceFile = File(p.join(docs.path, attachment.relativePath));
+      if (!await sourceFile.exists()) continue;
+      final bytes = await sourceFile.readAsBytes();
+      final archiveName = 'attachments/${const Uuid().v4()}${p.extension(sourceFile.path)}';
+      archive.addFile(ArchiveFile(archiveName, bytes.length, bytes));
+      attachmentManifest.add({
+        'backupId': attachment.id,
+        'entryBackupId': attachment.entryId,
+        'archiveName': archiveName,
+        'originalName': attachment.originalName ?? p.basename(sourceFile.path),
+        'mimeType': attachment.mimeType,
+        'byteLength': attachment.byteLength,
+        'createdAt': attachment.createdAt.toIso8601String(),
+      });
+    }
+
+    final manifest = {
+      'format': 'friends_vault_export',
+      'version': 1,
+      'kind': 'category',
+      'generatedAt': DateTime.now().toUtc().toIso8601String(),
+      'categories': [
+        {
+          'backupId': category.id,
+          'name': category.name,
+          'sortOrder': category.sortOrder,
+          'createdAt': category.createdAt.toIso8601String(),
+          'updatedAt': category.updatedAt.toIso8601String(),
+        }
+      ],
+      'entries': entryRows
+          .map((entry) => {
+                'backupId': entry.id,
+                'categoryBackupId': entry.categoryId,
+                'title': entry.title,
+                'content': entry.content,
+                'sourceText': entry.sourceText,
+                'sourceUrl': entry.sourceUrl,
+                'createdAt': entry.createdAt.toIso8601String(),
+                'updatedAt': entry.updatedAt.toIso8601String(),
+              })
+          .toList(),
+      'attachments': attachmentManifest,
+    };
+
+    final manifestBytes = utf8.encode(jsonEncode(manifest));
+    archive.addFile(ArchiveFile('manifest.json', manifestBytes.length, manifestBytes));
+
+    final encoder = ZipEncoder();
+    final output = encoder.encode(archive);
+    if (output == null) {
+      throw StateError('無法建立備份檔');
+    }
+
+    await targetFile.writeAsBytes(output);
+    return targetFile;
+  }
+
+  Future<File> exportFullBackupArchive({String? fileName}) async {
+    final docs = await getApplicationDocumentsDirectory();
+    final tempDir = await getTemporaryDirectory();
+    if (!await tempDir.exists()) {
+      await tempDir.create(recursive: true);
+    }
+    final targetPath = p.join(
+      tempDir.path,
+      fileName ?? 'friends_vault_full_backup_${DateTime.now().millisecondsSinceEpoch}.zip',
+    );
+    final targetFile = File(targetPath);
+    if (await targetFile.exists()) {
+      await targetFile.delete();
+    }
+
+    final categoryRows = await (select(categories)
+          ..orderBy([(t) => OrderingTerm(expression: t.sortOrder, mode: OrderingMode.asc)]))
+        .get();
+    final entryRows = await (select(entries)
+          ..orderBy([(t) => OrderingTerm(expression: t.createdAt, mode: OrderingMode.asc)]))
+        .get();
+    final attachmentRows = await (select(attachments)
+          ..orderBy([(t) => OrderingTerm(expression: t.createdAt, mode: OrderingMode.asc)]))
+        .get();
+
+    final archive = Archive();
+    final attachmentManifest = <Map<String, dynamic>>[];
+
+    for (final attachment in attachmentRows) {
+      final sourceFile = File(p.join(docs.path, attachment.relativePath));
+      if (!await sourceFile.exists()) continue;
+      final bytes = await sourceFile.readAsBytes();
+      final archiveName = 'attachments/${const Uuid().v4()}${p.extension(sourceFile.path)}';
+      archive.addFile(ArchiveFile(archiveName, bytes.length, bytes));
+      attachmentManifest.add({
+        'backupId': attachment.id,
+        'entryBackupId': attachment.entryId,
+        'archiveName': archiveName,
+        'originalName': attachment.originalName ?? p.basename(sourceFile.path),
+        'mimeType': attachment.mimeType,
+        'byteLength': attachment.byteLength,
+        'createdAt': attachment.createdAt.toIso8601String(),
+      });
+    }
+
+    final manifest = {
+      'format': 'friends_vault_export',
+      'version': 1,
+      'kind': 'full_backup',
+      'generatedAt': DateTime.now().toUtc().toIso8601String(),
+      'categories': categoryRows
+          .map((category) => {
+                'backupId': category.id,
+                'name': category.name,
+                'sortOrder': category.sortOrder,
+                'createdAt': category.createdAt.toIso8601String(),
+                'updatedAt': category.updatedAt.toIso8601String(),
+              })
+          .toList(),
+      'entries': entryRows
+          .map((entry) => {
+                'backupId': entry.id,
+                'categoryBackupId': entry.categoryId,
+                'title': entry.title,
+                'content': entry.content,
+                'sourceText': entry.sourceText,
+                'sourceUrl': entry.sourceUrl,
+                'createdAt': entry.createdAt.toIso8601String(),
+                'updatedAt': entry.updatedAt.toIso8601String(),
+              })
+          .toList(),
+      'attachments': attachmentManifest,
+    };
+
+    final manifestBytes = utf8.encode(jsonEncode(manifest));
+    archive.addFile(ArchiveFile('manifest.json', manifestBytes.length, manifestBytes));
+
+    final encoder = ZipEncoder();
+    final output = encoder.encode(archive);
+    if (output == null) {
+      throw StateError('無法建立備份檔');
+    }
+
+    await targetFile.writeAsBytes(output);
+    return targetFile;
+  }
+
+  Future<void> importBackupArchive({required File archiveFile}) async {
+    final docs = await getApplicationDocumentsDirectory();
+    final attachmentsDir = Directory(p.join(docs.path, 'attachments'));
+    if (!await attachmentsDir.exists()) {
+      await attachmentsDir.create(recursive: true);
+    }
+
+    final archiveBytes = await archiveFile.readAsBytes();
+    final archive = ZipDecoder().decodeBytes(archiveBytes);
+    final manifestFile = archive.files.where((file) => file.name == 'manifest.json').firstOrNull;
+    if (manifestFile == null) {
+      throw StateError('備份檔缺少 manifest.json');
+    }
+
+    final manifest = jsonDecode(utf8.decode(manifestFile.content)) as Map<String, dynamic>;
+    final kind = manifest['kind'];
+    if (manifest['format'] != 'friends_vault_export' || (kind != 'category' && kind != 'full_backup')) {
+      throw StateError('不支援的備份格式');
+    }
+
+    final categoryMaps = (manifest['categories'] as List<dynamic>).cast<Map<String, dynamic>>().toList(growable: false);
+    final entryMaps = (manifest['entries'] as List<dynamic>).cast<Map<String, dynamic>>().toList(growable: false);
+    final attachmentMaps = (manifest['attachments'] as List<dynamic>).cast<Map<String, dynamic>>().toList(growable: false);
+
+    await transaction(() async {
+      await delete(attachments).go();
+      await delete(entries).go();
+      await delete(categories).go();
+
+      if (await attachmentsDir.exists()) {
+        await attachmentsDir.delete(recursive: true);
+      }
+      await attachmentsDir.create(recursive: true);
+
+      final categoryIdMap = <String, String>{};
+      for (final categoryData in categoryMaps) {
+        final newCategoryId = const Uuid().v4();
+        categoryIdMap[categoryData['backupId'] as String] = newCategoryId;
+        await into(categories).insert(
+          CategoriesCompanion.insert(
+            id: newCategoryId,
+            name: categoryData['name'] as String,
+            sortOrder: Value(int.tryParse(categoryData['sortOrder'].toString()) ?? 0),
+            createdAt: DateTime.parse(categoryData['createdAt'] as String),
+            updatedAt: DateTime.parse(categoryData['updatedAt'] as String),
+          ),
+        );
+      }
+
+      final entryIdMap = <String, String>{};
+      for (final entryData in entryMaps) {
+        final newEntryId = const Uuid().v4();
+        final categoryBackupId = entryData['categoryBackupId'] as String;
+        final categoryId = categoryIdMap[categoryBackupId];
+        if (categoryId == null) {
+          continue;
+        }
+        entryIdMap[entryData['backupId'] as String] = newEntryId;
+        await into(entries).insert(
+          EntriesCompanion.insert(
+            id: newEntryId,
+            categoryId: categoryId,
+            title: entryData['title'] as String,
+            content: Value(entryData['content']?.toString()),
+            sourceText: Value(entryData['sourceText']?.toString()),
+            sourceUrl: Value(entryData['sourceUrl']?.toString()),
+            createdAt: DateTime.parse(entryData['createdAt'] as String),
+            updatedAt: DateTime.parse(entryData['updatedAt'] as String),
+          ),
+        );
+      }
+
+      for (final attachmentData in attachmentMaps) {
+        final entryBackupId = attachmentData['entryBackupId'] as String;
+        final entryId = entryIdMap[entryBackupId];
+        if (entryId == null) continue;
+
+        final archiveName = attachmentData['archiveName'] as String;
+        final archiveFile = archive.files.where((file) => file.name == archiveName).firstOrNull;
+        if (archiveFile == null) continue;
+
+        final ext = p.extension(archiveName);
+        final targetPath = p.join(attachmentsDir.path, '${const Uuid().v4()}$ext');
+        final targetFile = File(targetPath);
+        await targetFile.writeAsBytes(archiveFile.content);
+
+        await into(attachments).insert(
+          AttachmentsCompanion.insert(
+            id: const Uuid().v4(),
+            entryId: entryId,
+            relativePath: p.relative(targetPath, from: docs.path),
+            originalName: Value(attachmentData['originalName']?.toString()),
+            mimeType: Value(attachmentData['mimeType']?.toString()),
+            byteLength: Value(int.tryParse(attachmentData['byteLength']?.toString() ?? '0') ?? 0),
+            createdAt: DateTime.parse(attachmentData['createdAt'] as String),
+          ),
+        );
+      }
+    });
   }
 
   static String? _mimeTypeFor(String path) {
