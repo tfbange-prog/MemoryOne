@@ -43,9 +43,12 @@
 					<string>$(PRODUCT_MODULE_NAME).SceneDelegate</string>
 					<key>UISceneStoryboardFile</key>
 					<string>Main</string>
+                                        
 				</dict>
 			</array>
 		</dict>
+          <key>ITSAppUsesNonExemptEncryption</key>
+          <false/>
 	</dict>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
