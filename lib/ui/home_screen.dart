@@ -421,7 +421,7 @@ class _HomeScreenState extends State<HomeScreen> {
           );
         },
         child: Container(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(20),
             gradient: LinearGradient(
@@ -441,18 +441,20 @@ class _HomeScreenState extends State<HomeScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
+                crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
                   Expanded(
                     child: Text(
                       item.name,
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
-                      maxLines: 3,
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
+                      maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
                   PopupMenuButton<String>(
                     tooltip: '更多操作',
+                    padding: EdgeInsets.zero,
+                    iconSize: 20,
                     onSelected: (value) async {
                       if (value == 'rename') {
                         final controller = TextEditingController(text: item.name);
@@ -484,10 +486,8 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ],
               ),
-              const SizedBox(height: 12),
-              Text('更新：${_fmt.format(item.updatedAt)}', style: Theme.of(context).textTheme.bodySmall),
-              const SizedBox(height: 6),
-              Text(entryCountLabel, style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600)),
+              const SizedBox(height: 4),
+              Text(entryCountLabel, style: Theme.of(context).textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w600)),
             ],
           ),
         ),
@@ -716,10 +716,9 @@ class _HomeScreenState extends State<HomeScreen> {
             }
             return LayoutBuilder(
               builder: (context, constraints) {
-                final spacing = 12.0;
+                final spacing = 10.0;
                 final maxWidth = constraints.maxWidth;
-                final isPhone = maxWidth < 600;
-                final columns = isPhone ? 2 : 3;
+                final columns = 2;
                 final availableWidth = maxWidth - (columns - 1) * spacing;
                 final itemWidth = availableWidth / columns;
                 return SingleChildScrollView(
@@ -936,7 +935,10 @@ class _CategoryScreenState extends State<CategoryScreen> {
                 ),
                 child: ListTile(
                   title: Text(e.title),
-                  subtitle: Text('更新：${_fmt.format(e.updatedAt)}'),
+                  subtitle: Text(
+                    '更新：${_fmt.format(e.updatedAt)}',
+                    style: const TextStyle(fontSize: 11, fontWeight: FontWeight.normal),
+                  ),
                   trailing: trailing,
                   onTap: () async {
                     await Navigator.of(context).push(
@@ -1635,7 +1637,11 @@ class _IncomingShareScreenState extends State<IncomingShareScreen> {
     _selectedCategoryId = widget.categories.first.id;
     final text = widget.sharedText?.trim();
     _contentController = TextEditingController(text: text ?? '');
-    _titleController = TextEditingController(text: text != null ? _autoTitle(text) : '');
+    // 若分享內容偵測到 YouTube 連結，標題留空讓使用者自行輸入
+    final detectedYoutube = text != null &&
+        (text.contains('youtube.com') || text.contains('youtu.be'));
+    _titleController = TextEditingController(
+        text: (text != null && !detectedYoutube) ? _autoTitle(text) : '');
     if (widget.sharedFiles.isEmpty) {
       _saveFiles = false;
     }
