@@ -533,23 +533,19 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _backupAllData() async {
     try {
       final tempFile = await widget.db.exportFullBackupArchive(fileName: 'friends_vault_full_backup.zip');
+      final bytes = await tempFile.readAsBytes();
       final savePath = await FilePicker.platform.saveFile(
         dialogTitle: '儲存整份資料庫備份',
         fileName: 'friends_vault_full_backup.zip',
         type: FileType.custom,
         allowedExtensions: ['zip'],
+        bytes: bytes,
       );
       if (savePath == null || savePath.trim().isEmpty) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已取消備份')));
         return;
       }
-
-      final targetFile = File(savePath);
-      if (await targetFile.exists()) {
-        await targetFile.delete();
-      }
-      await tempFile.copy(savePath);
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('整份資料庫備份已儲存到你選擇的位置。')));
@@ -634,16 +630,6 @@ class _HomeScreenState extends State<HomeScreen> {
             icon: const Icon(Icons.format_size),
           ),
           IconButton(
-            tooltip: '上傳雲端',
-            onPressed: _uploadBackupToCloud,
-            icon: const Icon(Icons.cloud_upload_outlined),
-          ),
-          IconButton(
-            tooltip: '下載完整備份',
-            onPressed: _backupAllData,
-            icon: const Icon(Icons.download_outlined),
-          ),
-          IconButton(
             tooltip: '備份/還原',
             onPressed: _showBackupOptions,
             icon: const Icon(Icons.backup_outlined),
@@ -716,13 +702,15 @@ class _HomeScreenState extends State<HomeScreen> {
             }
             return LayoutBuilder(
               builder: (context, constraints) {
+                const scrollPadding = EdgeInsets.fromLTRB(12, 12, 12, 16);
                 final spacing = 10.0;
                 final maxWidth = constraints.maxWidth;
-                final columns = 2;
-                final availableWidth = maxWidth - (columns - 1) * spacing;
+                const columns = 2;
+                final horizontalPadding = scrollPadding.left + scrollPadding.right;
+                final availableWidth = maxWidth - horizontalPadding - (columns - 1) * spacing;
                 final itemWidth = availableWidth / columns;
                 return SingleChildScrollView(
-                  padding: const EdgeInsets.fromLTRB(12, 12, 12, 16),
+                  padding: scrollPadding,
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -835,12 +823,14 @@ class _CategoryScreenState extends State<CategoryScreen> {
   Future<void> _downloadCurrentCategoryArchive() async {
     try {
       final file = await widget.db.exportCategoryArchive(categoryId: widget.categoryId);
+      final bytes = await file.readAsBytes();
       final safeName = widget.categoryName.replaceAll(RegExp(r'[<>:"/\\|?*]'), '_');
       final savePath = await FilePicker.platform.saveFile(
         dialogTitle: '儲存資料框備份',
         fileName: 'friends_vault_category_${safeName}.zip',
         type: FileType.custom,
         allowedExtensions: ['zip'],
+        bytes: bytes,
       );
       if (savePath == null || savePath.trim().isEmpty) {
         if (!mounted) return;
@@ -848,11 +838,6 @@ class _CategoryScreenState extends State<CategoryScreen> {
         return;
       }
 
-      final targetFile = File(savePath);
-      if (await targetFile.exists()) {
-        await targetFile.delete();
-      }
-      await file.copy(savePath);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('資料框備份已儲存到你選擇的位置。')));
     } catch (e) {
