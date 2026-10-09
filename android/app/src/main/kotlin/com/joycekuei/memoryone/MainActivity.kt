@@ -1,4 +1,4 @@
-package com.example.friends_vault
+package com.joycekuei.memoryone
 
 import io.flutter.embedding.android.FlutterActivity
 

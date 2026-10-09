@@ -919,7 +919,9 @@ class _CategoryScreenState extends State<CategoryScreen> {
                   border: Border(left: BorderSide(color: isEven ? const Color(0xFFF0A24B) : const Color(0xFF5A8DFF), width: 4)),
                 ),
                 child: ListTile(
-                  title: Text(e.title),
+                  title: e.title.trim().isNotEmpty
+                      ? Text(e.title)
+                      : const Text('（無標題）', style: TextStyle(color: Colors.grey, fontStyle: FontStyle.italic)),
                   subtitle: Text(
                     '更新：${_fmt.format(e.updatedAt)}',
                     style: const TextStyle(fontSize: 11, fontWeight: FontWeight.normal),
@@ -1035,8 +1037,13 @@ class _EditEntryScreenState extends State<EditEntryScreen> {
   Future<void> _save() async {
     if (_saving) return;
     setState(() => _saving = true);
-    final title = _title.text.trim().isEmpty ? _autoTitle(_content.text) : _title.text.trim();
-    final content = _content.text.trim().isEmpty ? null : _content.text.trim();
+    final contentText = _content.text.trim();
+    final hasUrl = extractUrl(contentText) != null;
+    // 若正文含有網址且標題留空，允許標題保持空白；否則套用自動標題
+    final title = _title.text.trim().isNotEmpty
+        ? _title.text.trim()
+        : (hasUrl ? '' : _autoTitle(contentText));
+    final content = contentText.isEmpty ? null : contentText;
 
     late final String entryId;
     if (widget.entryId == null) {
@@ -1564,7 +1571,9 @@ class _SearchScreenState extends State<SearchScreen> {
                       itemBuilder: (context, i) {
                         final h = _hits[i];
                         return ListTile(
-                          title: Text(h.title),
+                          title: h.title.trim().isNotEmpty
+                              ? Text(h.title)
+                              : const Text('（無標題）', style: TextStyle(color: Colors.grey, fontStyle: FontStyle.italic)),
                           subtitle: Text('資料框：${h.categoryName}'),
                           trailing: const Icon(Icons.chevron_right),
                           onTap: () async {
@@ -1622,11 +1631,10 @@ class _IncomingShareScreenState extends State<IncomingShareScreen> {
     _selectedCategoryId = widget.categories.first.id;
     final text = widget.sharedText?.trim();
     _contentController = TextEditingController(text: text ?? '');
-    // 若分享內容偵測到 YouTube 連結，標題留空讓使用者自行輸入
-    final detectedYoutube = text != null &&
-        (text.contains('youtube.com') || text.contains('youtu.be'));
+    // 若分享內容偵測到任何網址（http/https），標題留空讓使用者自行輸入
+    final detectedUrl = text != null && extractUrl(text) != null;
     _titleController = TextEditingController(
-        text: (text != null && !detectedYoutube) ? _autoTitle(text) : '');
+        text: (text != null && !detectedUrl) ? _autoTitle(text) : '');
     if (widget.sharedFiles.isEmpty) {
       _saveFiles = false;
     }
@@ -1655,10 +1663,14 @@ class _IncomingShareScreenState extends State<IncomingShareScreen> {
     setState(() => _saving = true);
 
     final content = _saveText ? _contentController.text.trim() : null;
-    final title = _titleController.text.trim().isEmpty
-        ? _autoTitle(content ?? widget.sharedFiles.map((e) => e.path).join(' '))
-        : _titleController.text.trim();
     final detectedUrl = content != null ? extractUrl(content) : null;
+    // 若正文含有網址，標題允許保持空白（不自動填入）；否則才套用自動標題
+    final titleInput = _titleController.text.trim();
+    final title = titleInput.isNotEmpty
+        ? titleInput
+        : (detectedUrl != null
+            ? ''
+            : _autoTitle(content ?? widget.sharedFiles.map((e) => e.path).join(' ')));
 
     final entryId = await widget.db.createEntry(
       categoryId: _selectedCategoryId!,
