@@ -17,7 +17,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
 
-version: 1.0.0+19
+version: 1.0.0+20
 
 environment:
   sdk: ^3.11.4
@@ -63,7 +63,14 @@ dev_dependencies:
   flutter_lints: ^6.0.0
   drift_dev: ^2.28.2
   build_runner: ^2.4.13
-  
+  flutter_launcher_icons: ^0.14.4
+
+flutter_launcher_icons:
+  ios: true
+  android: false
+  image_path: icon/Icon-App-1024x1024@1x.png
+  remove_alpha_ios: true
+
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
