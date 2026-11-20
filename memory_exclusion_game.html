@@ -1,0 +1,973 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>記憶排除遊戲｜三種難度挑戰</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="preconnect" href="https://cdn.jsdelivr.net">
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;600;700&family=Noto+Sans+TC:wght@400;700;900&display=swap" rel="stylesheet">
+
+  <style>
+    /* ===== 1. RESET & VARIABLES ===== */
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+    }
+
+    :root {
+      --font: 'Fredoka', 'Noto Sans TC', system-ui, sans-serif;
+      --green-dark:  #2e7d32;
+      --green-mid:   #43a047;
+      --green-light: #81c784;
+      --orange:      #ff9800;
+      --orange-dark: #e65100;
+      --red:         #d32f2f;
+      --red-dark:    #b71c1c;
+    }
+
+    body {
+      font-family: var(--font);
+      background: linear-gradient(180deg, #edf7ee 0%, #c8ebd2 60%, #a2dbb3 100%);
+      color: #1b5e20;
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      position: relative;
+    }
+
+    /* ===== 2. FOREST BACKGROUND ===== */
+    .forest-bg {
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+      pointer-events: none;
+      overflow: hidden;
+    }
+
+    .dapple {
+      position: absolute;
+      background: radial-gradient(circle, rgba(255,255,255,0.6) 0%, rgba(255,255,255,0) 70%);
+      border-radius: 50%;
+      filter: blur(2px);
+      animation: floatDapple 12s infinite ease-in-out;
+      opacity: 0.4;
+    }
+    .dapple:nth-child(1) { width:120px; height:120px; top:15%; left:10%; animation-delay:0s; }
+    .dapple:nth-child(2) { width:180px; height:180px; top:40%; left:70%; animation-delay:2s; }
+    .dapple:nth-child(3) { width:100px; height:100px; top:70%; left:20%; animation-delay:4s; }
+    .dapple:nth-child(4) { width:150px; height:150px; top:5%;  left:50%; animation-delay:6s; }
+    @keyframes floatDapple {
+      0%,100% { transform:translateY(0) scale(1); opacity:0.3; }
+      50%      { transform:translateY(-30px) scale(1.15); opacity:0.6; }
+    }
+
+    .trees-container {
+      position: absolute;
+      bottom: 0; width: 100%; height: 22vh;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      padding: 0 10px;
+    }
+    .cartoon-tree {
+      width: 80px; height: 150px;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: flex-end;
+      transform-origin: bottom center;
+      animation: swayTree 6s infinite ease-in-out alternate;
+    }
+    .cartoon-tree.t2 { animation-delay:-2.5s; animation-duration:7s; opacity:0.85; transform:scale(0.8); }
+    .cartoon-tree.t3 { animation-delay:-4s;   animation-duration:5.5s; opacity:0.9; transform:scale(0.9); }
+    .tree-canopy {
+      width:70px; height:70px;
+      background:#4caf50; border-radius:50%;
+      position:relative;
+      box-shadow: inset -10px -10px 0 rgba(0,0,0,0.08);
+    }
+    .tree-canopy::before {
+      content:''; position:absolute;
+      width:50px; height:50px; background:#81c784;
+      border-radius:50%; top:-20px; left:10px;
+    }
+    .tree-canopy::after {
+      content:''; position:absolute;
+      width:45px; height:45px; background:#388e3c;
+      border-radius:50%; bottom:-10px; right:-10px;
+    }
+    .tree-trunk {
+      width:16px; height:60px;
+      background:#8d6e63; border-radius:4px 4px 0 0;
+      box-shadow: inset -4px 0 0 rgba(0,0,0,0.1);
+    }
+    @keyframes swayTree {
+      0%   { transform: rotate(-2deg); }
+      100% { transform: rotate(2deg); }
+    }
+
+    .leaf {
+      position:absolute;
+      width:16px; height:10px;
+      background:#81c784; border-radius:10px 0;
+      opacity:0.7; animation:fallLeaf 10s infinite linear;
+    }
+    .leaf:nth-child(1) { left:15%; animation-delay:1s; }
+    .leaf:nth-child(2) { left:45%; animation-delay:4s; }
+    .leaf:nth-child(3) { left:80%; animation-delay:7s; }
+    @keyframes fallLeaf {
+      0%   { top:-10%; transform:translateX(0) rotate(0deg); }
+      50%  { transform:translateX(40px) rotate(180deg); }
+      100% { top:105%; transform:translateX(-20px) rotate(360deg); }
+    }
+
+    /* ===== 3. APP CONTAINER ===== */
+    .app-container {
+      width:100%; max-width:460px;
+      height:100%; max-height:100vh;
+      display:flex; flex-direction:column;
+      justify-content:space-between;
+      position:relative; z-index:10;
+      padding:12px 12px 10px;
+    }
+
+    /* ===== 4. HEADER ===== */
+    .header-panel {
+      background:rgba(255,255,255,0.92);
+      border:4px solid var(--green-light);
+      border-radius:20px;
+      padding:10px 14px;
+      box-shadow:0 8px 0 rgba(129,199,132,0.5);
+      flex-shrink:0;
+    }
+    .round-info {
+      display:flex; justify-content:space-between; align-items:center;
+    }
+    .round-title {
+      font-size:24px; font-weight:900;
+      color:var(--green-dark);
+      text-shadow:1px 1px 0 #fff;
+    }
+    .header-right {
+      display:flex; align-items:center; gap:8px;
+    }
+    /* 難度標籤 */
+    .diff-badge {
+      font-size:14px; font-weight:700;
+      padding:3px 10px; border-radius:20px;
+      border:2px solid currentColor;
+    }
+    .diff-badge.easy   { color:#2e7d32; background:#e8f5e9; }
+    .diff-badge.medium { color:#e65100; background:#fff3e0; }
+    .diff-badge.hard   { color:#c62828; background:#ffebee; }
+
+    /* 已記住計數 */
+    .score-badge {
+      background:var(--orange); color:#fff;
+      font-size:17px; font-weight:700;
+      padding:3px 12px; border-radius:30px;
+      box-shadow:0 3px 0 var(--orange-dark);
+      display:flex; align-items:center; gap:4px;
+    }
+
+    /* 生命值（專家模式） */
+    .lives-bar {
+      display:flex; gap:4px; align-items:center;
+      margin-top:6px;
+    }
+    .heart {
+      font-size:22px;
+      transition:transform 0.2s;
+    }
+    .heart.lost {
+      filter:grayscale(1); opacity:0.3;
+      transform:scale(0.85);
+    }
+    .lives-bar.hidden { display:none; }
+
+    /* ===== 5. GAME BOARD ===== */
+    .game-board-wrapper {
+      flex:1; display:flex;
+      justify-content:center; align-items:center;
+      width:100%; min-height:0;
+      margin:8px 0;
+    }
+    .game-board {
+      display:grid;
+      grid-template-columns: repeat(var(--cols,2), 1fr);
+      gap:10px; width:100%;
+      max-height:67vh;
+      align-content:center;
+    }
+
+    /* ===== 6. CARDS ===== */
+    .card {
+      background:#fff;
+      border:4px solid var(--green-light);
+      border-radius:20px;
+      box-shadow:0 5px 0 #66bb6a, 0 8px 16px rgba(0,0,0,0.08);
+      display:flex; flex-direction:column;
+      align-items:center; justify-content:center;
+      height:clamp(88px, 11vh, 140px);
+      cursor:pointer; position:relative;
+      transition:transform 0.1s ease, box-shadow 0.1s ease;
+      overflow:hidden; padding:4px 6px 3px;
+    }
+    .card:hover  { transform:translateY(-2px); }
+    .card:active {
+      transform:translateY(4px);
+      box-shadow:0 1px 0 #66bb6a, 0 3px 8px rgba(0,0,0,0.08);
+    }
+    .card-art {
+      display:block;
+      width:auto;
+      height:auto;
+      max-width:92%;
+      max-height:calc(100% - 1.35em);
+      object-fit:contain;
+      object-position:center;
+      pointer-events:none;
+      flex:1 1 auto;
+      min-height:0;
+    }
+    .card-emoji {
+      font-size:clamp(40px, 7vh, 72px);
+      line-height:1;
+      max-width:92%;
+      max-height:calc(100% - 1.35em);
+      filter:drop-shadow(0 2px 4px rgba(0,0,0,0.1));
+      pointer-events:none;
+    }
+    .card-name {
+      font-size:clamp(12px, 1.6vh, 15px);
+      font-weight:700; color:#2e7d32;
+      margin-top:1px; white-space:nowrap;
+      line-height:1.2;
+      flex-shrink:0;
+    }
+
+    /* 答錯震動 */
+    .card.shake-error {
+      animation:shake 0.5s ease;
+      border-color:var(--red) !important;
+      box-shadow:0 5px 0 var(--red-dark), 0 8px 16px rgba(183,28,28,0.2) !important;
+    }
+    @keyframes shake {
+      0%,100% { transform:translateX(0); }
+      15%,45%,75% { transform:translateX(-8px) rotate(-3deg); }
+      30%,60%,90% { transform:translateX(8px)  rotate( 3deg); }
+    }
+
+    /* 答對彈跳 */
+    .card.happy-correct {
+      animation:happyBounce 0.6s ease;
+      border-color:var(--orange) !important;
+      box-shadow:0 5px 0 var(--orange-dark), 0 8px 16px rgba(230,81,0,0.2) !important;
+      z-index:20;
+    }
+    @keyframes happyBounce {
+      0%,100% { transform:scale(1) translateY(0); }
+      30%     { transform:scale(1.2) translateY(-18px) rotate(5deg); }
+      55%     { transform:scale(0.92) translateY(4px); }
+      78%     { transform:scale(1.05) translateY(-5px); }
+    }
+
+    /* ===== 7. FOOTER ===== */
+    .footer-panel {
+      display:flex; gap:10px; align-items:center;
+      flex-shrink:0;
+    }
+    .btn-sound {
+      background:#fff; border:3px solid var(--green-dark);
+      color:var(--green-dark);
+      width:52px; height:52px; border-radius:50%;
+      display:flex; align-items:center; justify-content:center;
+      font-size:22px; cursor:pointer;
+      box-shadow:0 4px 0 var(--green-dark);
+      transition:transform 0.05s;
+      flex-shrink:0;
+    }
+    .btn-sound:active { transform:translateY(3px); box-shadow:0 1px 0 var(--green-dark); }
+
+    .btn-reset {
+      flex:1; font-family:var(--font);
+      font-size:22px; font-weight:900;
+      color:#fff; background:var(--green-dark);
+      border:none; border-radius:18px;
+      padding:12px 16px; cursor:pointer;
+      box-shadow:0 6px 0 #1b5e20;
+      transition:transform 0.05s;
+      display:flex; align-items:center; justify-content:center; gap:8px;
+    }
+    .btn-reset:active { transform:translateY(4px); box-shadow:0 2px 0 #1b5e20; }
+
+    /* ===== 8. MODALS ===== */
+    .modal {
+      position:absolute; inset:0;
+      background:rgba(27,94,32,0.88);
+      backdrop-filter:blur(10px);
+      z-index:100;
+      display:flex; justify-content:center; align-items:center;
+      padding:20px;
+      animation:fadeIn 0.35s ease forwards;
+    }
+    .modal.hidden { display:none !important; }
+    @keyframes fadeIn { from{opacity:0;} to{opacity:1;} }
+
+    .modal-content {
+      background:#fff;
+      border:6px solid var(--orange);
+      border-radius:32px;
+      padding:28px 22px;
+      text-align:center;
+      max-width:400px; width:100%;
+      box-shadow:0 12px 28px rgba(0,0,0,0.3);
+      transform:translateY(30px);
+      animation:slideUp 0.4s cubic-bezier(0.175,0.885,0.32,1.25) forwards;
+    }
+    @keyframes slideUp { to{transform:translateY(0);} }
+
+    .modal-title {
+      font-size:32px; font-weight:900;
+      color:var(--orange-dark); margin-bottom:10px;
+      text-shadow:2px 2px 0 #fff8e1;
+    }
+    .modal-desc {
+      font-size:18px; font-weight:700;
+      line-height:1.65; color:#3e2723; margin-bottom:20px;
+    }
+    .modal-icon {
+      font-size:68px; display:inline-block; margin-bottom:10px;
+      animation:floatIcon 3s infinite ease-in-out;
+    }
+    @keyframes floatIcon {
+      0%,100% { transform:translateY(0) rotate(0deg); }
+      50%      { transform:translateY(-14px) rotate(5deg); }
+    }
+    .error-note {
+      font-size:15px; font-weight:700;
+      color:var(--red); margin-top:8px;
+    }
+
+    /* ===== 難度選擇按鈕 ===== */
+    .diff-btn-group {
+      display:flex; flex-direction:column; gap:12px;
+      margin-top:4px;
+    }
+    .diff-btn {
+      font-family:var(--font);
+      font-size:22px; font-weight:900;
+      border:none; border-radius:22px;
+      padding:14px 20px; cursor:pointer;
+      box-shadow:0 7px 0 rgba(0,0,0,0.2);
+      transition:transform 0.08s, box-shadow 0.08s;
+      display:flex; align-items:center; justify-content:center; gap:10px;
+    }
+    .diff-btn:active { transform:translateY(4px); box-shadow:0 3px 0 rgba(0,0,0,0.2); }
+    .diff-btn.easy   { background:#4caf50; color:#fff; box-shadow:0 7px 0 #2e7d32; }
+    .diff-btn.medium { background:#ff9800; color:#fff; box-shadow:0 7px 0 #e65100; }
+    .diff-btn.hard   { background:#e53935; color:#fff; box-shadow:0 7px 0 #b71c1c; }
+    .diff-btn:active.easy   { box-shadow:0 3px 0 #2e7d32; }
+    .diff-btn:active.medium { box-shadow:0 3px 0 #e65100; }
+    .diff-btn:active.hard   { box-shadow:0 3px 0 #b71c1c; }
+
+    .diff-label {
+      font-size:14px; font-weight:700;
+      opacity:0.88; display:block;
+      margin-top:2px; line-height:1.2;
+    }
+
+    /* 重玩按鈕 */
+    .btn-large {
+      font-family:var(--font);
+      width:100%; font-size:26px; font-weight:900;
+      color:#fff; background:var(--orange);
+      border:none; border-radius:22px;
+      padding:14px 20px; cursor:pointer;
+      box-shadow:0 8px 0 var(--orange-dark);
+      transition:transform 0.08s, box-shadow 0.08s;
+    }
+    .btn-large:active { transform:translateY(4px); box-shadow:0 4px 0 var(--orange-dark); }
+    .btn-large.green-btn {
+      background:#43a047; box-shadow:0 8px 0 #2e7d32;
+    }
+    .btn-large.green-btn:active { box-shadow:0 4px 0 #2e7d32; }
+
+    /* ===== 9. TOAST ===== */
+    .toast {
+      position:absolute; bottom:14%; left:50%;
+      transform:translateX(-50%) translateY(20px);
+      background:rgba(183,28,28,0.95);
+      border:3px solid #ff8a80; color:#fff;
+      padding:10px 20px; border-radius:20px;
+      font-size:19px; font-weight:700;
+      box-shadow:0 4px 10px rgba(0,0,0,0.2);
+      opacity:0; transition:opacity 0.3s, transform 0.3s;
+      z-index:90; pointer-events:none; white-space:nowrap;
+    }
+    .toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+  </style>
+</head>
+<body>
+
+  <!-- 卡通森林背景 -->
+  <div class="forest-bg">
+    <div class="dapple"></div>
+    <div class="dapple"></div>
+    <div class="dapple"></div>
+    <div class="dapple"></div>
+    <div class="leaf"></div>
+    <div class="leaf"></div>
+    <div class="leaf"></div>
+    <div class="trees-container">
+      <div class="cartoon-tree t1"><div class="tree-canopy"></div><div class="tree-trunk"></div></div>
+      <div class="cartoon-tree t2"><div class="tree-canopy"></div><div class="tree-trunk"></div></div>
+      <div class="cartoon-tree t3"><div class="tree-canopy"></div><div class="tree-trunk"></div></div>
+    </div>
+  </div>
+
+  <!-- 主版面 -->
+  <div class="app-container">
+
+    <!-- 頂部 -->
+    <header class="header-panel">
+      <div class="round-info">
+        <h1 class="round-title" id="roundText">第 1 / 10 輪</h1>
+        <div class="header-right">
+          <span class="diff-badge" id="diffBadge">挑戰</span>
+          <div class="score-badge">
+            <span>🌟</span>
+            <span id="scoreText">已記 0 個</span>
+          </div>
+        </div>
+      </div>
+      <!-- 生命值（只有專家模式顯示） -->
+      <div class="lives-bar hidden" id="livesBar">
+        <span class="heart" id="h1">❤️</span>
+        <span class="heart" id="h2">❤️</span>
+        <span class="heart" id="h3">❤️</span>
+      </div>
+    </header>
+
+    <!-- 卡片盤面 -->
+    <main class="game-board-wrapper">
+      <div class="game-board" id="board"></div>
+    </main>
+
+    <!-- 底部控制 -->
+    <footer class="footer-panel">
+      <button class="btn-sound" id="soundBtn" title="切換音效">🔊</button>
+      <button class="btn-reset" id="resetBtn">🔄 重新開始</button>
+    </footer>
+
+  </div>
+
+  <!-- Toast -->
+  <div class="toast" id="toastMsg"></div>
+
+  <!-- ===== 難度選擇彈窗 ===== -->
+  <div class="modal" id="startModal">
+    <div class="modal-content">
+      <span class="modal-icon">🧠</span>
+      <h2 class="modal-title">記憶排除遊戲</h2>
+      <p class="modal-desc">
+        每輪從牌面中選一個<b>從未選過的圖案</b>！<br>
+        共 10 輪，憑記憶力找出全新圖案。
+      </p>
+      <div class="diff-btn-group">
+        <button class="diff-btn easy" id="btnEasy">
+          <span>🟢 入門版</span>
+          <span class="diff-label">8 張牌・同類圖案・輕鬆挑戰</span>
+        </button>
+        <button class="diff-btn medium" id="btnMedium">
+          <span>🟡 挑戰版</span>
+          <span class="diff-label">10 張牌・跨兩物種・干擾漸增</span>
+        </button>
+        <button class="diff-btn hard" id="btnHard">
+          <span>🔴 專家版</span>
+          <span class="diff-label">10 張牌・四種混合・3條命制</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 恭喜過關彈窗 ===== -->
+  <div class="modal hidden" id="winModal">
+    <div class="modal-content">
+      <span class="modal-icon">🥳</span>
+      <h2 class="modal-title">恭喜過關！</h2>
+      <p class="modal-desc" id="winDesc">您成功記住了所有圖案！</p>
+      <button class="btn-large" id="playAgainBtn">🔁 再玩一次</button>
+      <button class="btn-large green-btn" id="changeDiffBtn" style="margin-top:10px;">⚙️ 換難度</button>
+      <p class="error-note" id="winError"></p>
+    </div>
+  </div>
+
+  <!-- ===== 遊戲失敗彈窗（專家模式命數歸零） ===== -->
+  <div class="modal hidden" id="loseModal">
+    <div class="modal-content">
+      <span class="modal-icon">😵</span>
+      <h2 class="modal-title">挑戰失敗！</h2>
+      <p class="modal-desc" id="loseDesc">命數用盡！已記住了幾個圖案？</p>
+      <button class="btn-large" id="retryBtn">🔁 再試一次</button>
+      <button class="btn-large green-btn" id="changeDiffBtn2" style="margin-top:10px;">⚙️ 換難度</button>
+    </div>
+  </div>
+
+  <script>
+  // =====================================================================
+  // 1. 跨物種大題庫（60 種）
+  // =====================================================================
+  const ALL_ITEMS = [
+    // 🐦 鳥類 (15)
+    { id:1,  emoji:"🦅", name:"老鷹",   cat:"bird" },
+    { id:2,  emoji:"🦆", name:"野鴨",   cat:"bird" },
+    { id:3,  emoji:"🦉", name:"貓頭鷹", cat:"bird" },
+    { id:4,  emoji:"🦚", name:"孔雀",   cat:"bird" },
+    { id:5,  emoji:"🦜", name:"鸚鵡",   cat:"bird" },
+    { id:6,  emoji:"🦢", name:"天鵝",   cat:"bird" },
+    { id:7,  emoji:"🦩", name:"紅鶴",   cat:"bird" },
+    { id:8,  emoji:"🐧", name:"企鵝",   cat:"bird" },
+    { id:9,  emoji:"🦤", name:"渡渡鳥", cat:"bird" },
+    { id:10, emoji:"🪿", name:"白鵝",   cat:"bird" },
+    { id:11, emoji:"🐔", name:"母雞",   cat:"bird" },
+    { id:12, emoji:"🦃", name:"火雞",   cat:"bird" },
+    { id:13, emoji:"🕊️", name:"鴿子",  cat:"bird" },
+    { id:14, emoji:"🐦", name:"山雀",   cat:"bird" },
+    { id:15, emoji:"🥚", name:"鳥蛋",   cat:"bird" },
+
+    // 🐶 動物 (15)
+    { id:21, emoji:"🐶", name:"小狗",   cat:"animal" },
+    { id:22, emoji:"🐱", name:"小貓",   cat:"animal" },
+    { id:23, emoji:"🐻", name:"棕熊",   cat:"animal" },
+    { id:24, emoji:"🐼", name:"熊貓",   cat:"animal" },
+    { id:25, emoji:"🐨", name:"無尾熊", cat:"animal" },
+    { id:26, emoji:"🦁", name:"獅子",   cat:"animal" },
+    { id:27, emoji:"🐯", name:"老虎",   cat:"animal" },
+    { id:28, emoji:"🦊", name:"狐狸",   cat:"animal" },
+    { id:29, emoji:"🐰", name:"兔子",   cat:"animal" },
+    { id:30, emoji:"🐸", name:"青蛙",   cat:"animal" },
+    { id:31, emoji:"🐮", name:"乳牛",   cat:"animal" },
+    { id:32, emoji:"🐷", name:"小豬",   cat:"animal" },
+    { id:33, emoji:"🐑", name:"綿羊",   cat:"animal" },
+    { id:34, emoji:"🐘", name:"大象",   cat:"animal" },
+    { id:35, emoji:"🦒", name:"長頸鹿", cat:"animal" },
+
+    // 🐞 昆蟲 (15)
+    { id:41, emoji:"🦋", name:"蝴蝶",   cat:"insect" },
+    { id:42, emoji:"🐝", name:"蜜蜂",   cat:"insect" },
+    { id:43, emoji:"🐞", name:"瓢蟲",   cat:"insect" },
+    { id:44, emoji:"🪲", name:"甲蟲",   cat:"insect" },
+    { id:45, emoji:"🪳", name:"蟑螂",   cat:"insect" },
+    { id:46, emoji:"🐛", name:"毛毛蟲", cat:"insect" },
+    { id:47, emoji:"🦗", name:"蟋蟀",   cat:"insect" },
+    { id:48, emoji:"🕷️", name:"蜘蛛",  cat:"insect" },
+    { id:49, emoji:"🦟", name:"蚊子",   cat:"insect" },
+    { id:50, emoji:"🐜", name:"螞蟻",   cat:"insect" },
+    { id:51, emoji:"🐢", name:"烏龜",   cat:"insect" },
+    { id:52, emoji:"🐡", name:"河豚",   cat:"insect" },
+    { id:53, emoji:"🦎", name:"蜥蜴",   cat:"insect" },
+    { id:54, emoji:"🐊", name:"鱷魚",   cat:"insect" },
+    { id:55, emoji:"🦑", name:"魷魚",   cat:"insect" },
+
+    // 🌸 植物水果 (15)
+    { id:61, emoji:"🍎", name:"蘋果",   cat:"plant" },
+    { id:62, emoji:"🍊", name:"橘子",   cat:"plant" },
+    { id:63, emoji:"🍋", name:"檸檬",   cat:"plant" },
+    { id:64, emoji:"🍇", name:"葡萄",   cat:"plant" },
+    { id:65, emoji:"🍓", name:"草莓",   cat:"plant" },
+    { id:66, emoji:"🍑", name:"水蜜桃", cat:"plant" },
+    { id:67, emoji:"🍒", name:"櫻桃",   cat:"plant" },
+    { id:68, emoji:"🥭", name:"芒果",   cat:"plant" },
+    { id:69, emoji:"🍍", name:"鳳梨",   cat:"plant" },
+    { id:70, emoji:"🥥", name:"椰子",   cat:"plant" },
+    { id:71, emoji:"🌻", name:"向日葵", cat:"plant" },
+    { id:72, emoji:"🌹", name:"玫瑰",   cat:"plant" },
+    { id:73, emoji:"🍄", name:"蘑菇",   cat:"plant" },
+    { id:74, emoji:"🌿", name:"綠葉",   cat:"plant" },
+    { id:75, emoji:"🎃", name:"南瓜",   cat:"plant" },
+  ];
+
+  // =====================================================================
+  // 2. 難度設定
+  // =====================================================================
+  const DIFFICULTY = {
+    easy: {
+      label: "入門", badgeClass: "easy",
+      cardCount: 8,
+      // 只使用隨機一種類別（每局開始時決定）
+      categories: null,    // null = 只抽單一類
+      lives: 0,            // 0 = 無限
+      // minSelected[round-1] -> 該輪最少出現幾張「已選過」圖案
+      minSelectedPerRound: [0, 1, 1, 1, 2, 2, 2, 2, 3, 3],
+    },
+    medium: {
+      label: "挑戰", badgeClass: "medium",
+      cardCount: 10,
+      categories: ["bird","animal"],
+      lives: 0,
+      minSelectedPerRound: [0, 1, 2, 2, 3, 3, 4, 4, 5, 5],
+    },
+    hard: {
+      label: "專家", badgeClass: "hard",
+      cardCount: 10,
+      categories: ["bird","animal","insect","plant"],
+      lives: 3,
+      minSelectedPerRound: [0, 2, 3, 3, 4, 4, 5, 6, 6, 7],
+    },
+  };
+
+  // =====================================================================
+  // 3. 遊戲狀態
+  // =====================================================================
+  let currentDiff = null;     // 當前難度 key
+  let gamePool    = [];        // 本局使用的圖案池（24個）
+  let selected    = [];        // 已選過的圖案
+  let currentRound = 1;
+  const MAX_ROUNDS = 10;
+  let livesLeft   = 0;
+  let wrongCount  = 0;
+  let isMuted     = false;
+  let isLocked    = false;     // 防止連點
+
+  // =====================================================================
+  // 4. DOM 元素
+  // =====================================================================
+  const boardEl      = document.getElementById("board");
+  const roundTextEl  = document.getElementById("roundText");
+  const scoreTextEl  = document.getElementById("scoreText");
+  const diffBadgeEl  = document.getElementById("diffBadge");
+  const livesBarEl   = document.getElementById("livesBar");
+  const heartEls     = [document.getElementById("h1"), document.getElementById("h2"), document.getElementById("h3")];
+  const toastEl      = document.getElementById("toastMsg");
+
+  const startModal   = document.getElementById("startModal");
+  const winModal     = document.getElementById("winModal");
+  const loseModal    = document.getElementById("loseModal");
+  const winDescEl    = document.getElementById("winDesc");
+  const winErrorEl   = document.getElementById("winError");
+  const loseDescEl   = document.getElementById("loseDesc");
+
+  const btnEasy   = document.getElementById("btnEasy");
+  const btnMedium = document.getElementById("btnMedium");
+  const btnHard   = document.getElementById("btnHard");
+  const playAgainBtn   = document.getElementById("playAgainBtn");
+  const changeDiffBtn  = document.getElementById("changeDiffBtn");
+  const retryBtn       = document.getElementById("retryBtn");
+  const changeDiffBtn2 = document.getElementById("changeDiffBtn2");
+  const resetBtn  = document.getElementById("resetBtn");
+  const soundBtn  = document.getElementById("soundBtn");
+
+  // =====================================================================
+  // 5. Web Audio
+  // =====================================================================
+  const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+  function playSound(type) {
+    if (isMuted) return;
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    const osc  = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.connect(gain); gain.connect(audioCtx.destination);
+    const now = audioCtx.currentTime;
+    if (type === 'correct') {
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(659.25, now);
+      osc.frequency.setValueAtTime(880.00, now + 0.13);
+      gain.gain.setValueAtTime(0.12, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
+      osc.start(now); osc.stop(now + 0.45);
+    } else if (type === 'wrong') {
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(146.83, now);
+      osc.frequency.linearRampToValueAtTime(110, now + 0.25);
+      gain.gain.setValueAtTime(0.15, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.32);
+      osc.start(now); osc.stop(now + 0.32);
+    } else if (type === 'win') {
+      osc.type = 'triangle';
+      const notes = [523.25, 659.25, 783.99, 1046.50];
+      notes.forEach((f, i) => osc.frequency.setValueAtTime(f, now + i * 0.13));
+      gain.gain.setValueAtTime(0.18, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.7);
+      osc.start(now); osc.stop(now + 0.7);
+    } else if (type === 'lose') {
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(200, now);
+      osc.frequency.linearRampToValueAtTime(80, now + 0.6);
+      gain.gain.setValueAtTime(0.15, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.65);
+      osc.start(now); osc.stop(now + 0.65);
+    }
+  }
+
+  // =====================================================================
+  // 6. 工具函式
+  // =====================================================================
+  function shuffle(arr) {
+    const a = [...arr];
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+  }
+
+  let toastTimer;
+  function showToast(msg) {
+    toastEl.textContent = msg;
+    toastEl.classList.add("show");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toastEl.classList.remove("show"), 1600);
+  }
+
+  function emojiToTwemojiUrl(emoji) {
+    const codes = Array.from(emoji)
+      .map(ch => ch.codePointAt(0).toString(16))
+      .filter(c => c !== "fe0f");
+    return `https://cdn.jsdelivr.net/gh/jdecked/twemoji@15.1.0/assets/svg/${codes.join("-")}.svg`;
+  }
+
+  function createCardArt(item) {
+    const img = document.createElement("img");
+    img.className = "card-art";
+    img.alt = item.name;
+    img.draggable = false;
+    img.src = emojiToTwemojiUrl(item.emoji);
+    img.addEventListener("error", () => {
+      const fallback = document.createElement("div");
+      fallback.className = "card-emoji";
+      fallback.textContent = item.emoji;
+      img.replaceWith(fallback);
+    });
+    return img;
+  }
+
+  // =====================================================================
+  // 7. 初始化一局（選完難度後呼叫）
+  // =====================================================================
+  function initGame(diffKey) {
+    currentDiff  = diffKey;
+    const cfg    = DIFFICULTY[diffKey];
+    currentRound = 1;
+    selected     = [];
+    wrongCount   = 0;
+    livesLeft    = cfg.lives || 0;
+    isLocked     = false;
+
+    // 組成本局圖案池（每局重新抽）
+    if (cfg.categories === null) {
+      // 入門：隨機選一種類
+      const allCats = ["bird","animal","insect","plant"];
+      const pickedCat = allCats[Math.floor(Math.random() * allCats.length)];
+      gamePool = shuffle(ALL_ITEMS.filter(it => it.cat === pickedCat));
+    } else {
+      // 混合數個種類，每類平均分配後洗牌
+      const perCat = [];
+      cfg.categories.forEach(cat => perCat.push(...ALL_ITEMS.filter(it => it.cat === cat)));
+      gamePool = shuffle(perCat);
+    }
+
+    // 確保池大到足夠整局使用（最多需要 10 + 10×10 = 110，實際上池只需比10大很多就夠）
+    // 如果池不足 24 個則重複補充（理論上不會，因為至少有 15 個）
+
+    // 更新 UI 難度標籤
+    diffBadgeEl.textContent  = cfg.label;
+    diffBadgeEl.className    = "diff-badge " + cfg.badgeClass;
+
+    // 生命值顯示
+    if (cfg.lives > 0) {
+      livesBarEl.classList.remove("hidden");
+      renderLives();
+    } else {
+      livesBarEl.classList.add("hidden");
+    }
+
+    // 調整 grid 欄數
+    const cols = cfg.cardCount <= 8 ? 2 : 2;
+    boardEl.style.setProperty("--cols", cols);
+
+    startRound();
+  }
+
+  // =====================================================================
+  // 8. 每輪發牌
+  // =====================================================================
+  function startRound() {
+    isLocked = false;
+
+    roundTextEl.textContent = `第 ${currentRound} / ${MAX_ROUNDS} 輪`;
+    scoreTextEl.textContent = `已記 ${selected.length} 個`;
+
+    const cfg = DIFFICULTY[currentDiff];
+    const cardCount = cfg.cardCount;
+
+    // --- 決定干擾項（已選過）張數 S ---
+    let S = 0;
+    if (selected.length > 0) {
+      const minS = Math.min(
+        cfg.minSelectedPerRound[currentRound - 1],
+        selected.length
+      );
+      const maxS = Math.min(cardCount - 1, selected.length); // 至少保留 1 張新的
+      S = minS + Math.floor(Math.random() * (maxS - minS + 1));
+      S = Math.max(0, Math.min(S, maxS));
+    }
+    const U = cardCount - S; // 新圖案張數
+
+    // --- 選出 S 張已選過的 ---
+    const chosenOld = shuffle(selected).slice(0, S);
+
+    // --- 從 gamePool 篩出未選過的，選出 U 張 ---
+    const poolUnused = gamePool.filter(it => !selected.some(s => s.id === it.id));
+    const chosenNew  = shuffle(poolUnused).slice(0, U);
+
+    // 萬一 pool 不夠（極罕見），補一些（重複允許）
+    const finalPool = shuffle([...chosenOld, ...chosenNew]);
+
+    // --- 渲染卡片 ---
+    boardEl.innerHTML = "";
+    finalPool.forEach(item => {
+      const card = document.createElement("div");
+      card.className = "card";
+      const nameEl = document.createElement("div");
+      nameEl.className = "card-name";
+      nameEl.textContent = item.name;
+      card.append(createCardArt(item), nameEl);
+      card.addEventListener("click", () => onCardClick(item, card));
+      boardEl.appendChild(card);
+    });
+  }
+
+  // =====================================================================
+  // 9. 點擊卡片
+  // =====================================================================
+  function onCardClick(item, cardEl) {
+    if (isLocked) return;
+
+    const alreadyPicked = selected.some(s => s.id === item.id);
+
+    if (alreadyPicked) {
+      // ── 答錯 ──
+      isLocked = true;
+      wrongCount++;
+      playSound('wrong');
+      cardEl.classList.add("shake-error");
+      showToast(`「${item.name}」之前選過了喔！`);
+      if (navigator.vibrate) navigator.vibrate(220);
+
+      if (DIFFICULTY[currentDiff].lives > 0) {
+        livesLeft--;
+        renderLives();
+        if (livesLeft <= 0) {
+          // 命數歸零 → 失敗
+          setTimeout(() => {
+            cardEl.classList.remove("shake-error");
+            endGame(false);
+          }, 550);
+          return;
+        }
+      }
+
+      setTimeout(() => {
+        cardEl.classList.remove("shake-error");
+        isLocked = false;
+      }, 550);
+
+    } else {
+      // ── 答對 ──
+      isLocked = true;
+      selected.push(item);
+      playSound('correct');
+      cardEl.classList.add("happy-correct");
+
+      setTimeout(() => {
+        cardEl.classList.remove("happy-correct");
+        if (currentRound >= MAX_ROUNDS) {
+          endGame(true);
+        } else {
+          currentRound++;
+          startRound();
+        }
+      }, 660);
+    }
+  }
+
+  // =====================================================================
+  // 10. 渲染生命值
+  // =====================================================================
+  function renderLives() {
+    const total = DIFFICULTY[currentDiff].lives;
+    heartEls.forEach((el, i) => {
+      if (i < total) {
+        el.style.display = "inline";
+        el.classList.toggle("lost", i >= livesLeft);
+      } else {
+        el.style.display = "none";
+      }
+    });
+  }
+
+  // =====================================================================
+  // 11. 結束遊戲
+  // =====================================================================
+  function endGame(isWin) {
+    isLocked = true;
+    if (isWin) {
+      playSound('win');
+      winDescEl.textContent = `您成功記住了 ${selected.length} 個圖案！大腦記憶力一級棒！`;
+      winErrorEl.textContent = wrongCount > 0 ? `本局答錯次數：${wrongCount} 次` : `🏆 零失誤完美通關！`;
+      winModal.classList.remove("hidden");
+    } else {
+      playSound('lose');
+      loseDescEl.textContent = `第 ${currentRound} 輪失敗！已記住 ${selected.length} 個圖案。再試一次！`;
+      loseModal.classList.remove("hidden");
+    }
+  }
+
+  // =====================================================================
+  // 12. 事件綁定
+  // =====================================================================
+  function resumeAudio() {
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+  }
+
+  btnEasy.addEventListener("click",   () => { resumeAudio(); startModal.classList.add("hidden"); initGame("easy");   });
+  btnMedium.addEventListener("click", () => { resumeAudio(); startModal.classList.add("hidden"); initGame("medium"); });
+  btnHard.addEventListener("click",   () => { resumeAudio(); startModal.classList.add("hidden"); initGame("hard");   });
+
+  // 再玩一次（同難度）
+  playAgainBtn.addEventListener("click", () => {
+    winModal.classList.add("hidden");
+    initGame(currentDiff);
+  });
+  retryBtn.addEventListener("click", () => {
+    loseModal.classList.add("hidden");
+    initGame(currentDiff);
+  });
+
+  // 換難度（回開始畫面）
+  changeDiffBtn.addEventListener("click",  () => { winModal.classList.add("hidden");  startModal.classList.remove("hidden"); });
+  changeDiffBtn2.addEventListener("click", () => { loseModal.classList.add("hidden"); startModal.classList.remove("hidden"); });
+
+  // 中途重新開始 → 回難度選擇
+  resetBtn.addEventListener("click", () => {
+    if (confirm("確定要重新開始並重新選擇難度嗎？")) {
+      winModal.classList.add("hidden");
+      loseModal.classList.add("hidden");
+      startModal.classList.remove("hidden");
+    }
+  });
+
+  soundBtn.addEventListener("click", () => {
+    isMuted = !isMuted;
+    soundBtn.textContent = isMuted ? "🔇" : "🔊";
+  });
+  </script>
+</body>
+</html>
